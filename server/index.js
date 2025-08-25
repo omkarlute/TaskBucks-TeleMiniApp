@@ -22,7 +22,7 @@ app.use(morgan('dev'));
 // ✅ Allow local dev + Render production
 const allowedOrigins = [
   'http://localhost:5173',
-  'https://taskbucks.onrender.com'
+  'https://tele-miniapp.onrender.com'
 ];
 
 app.use(cors({
