@@ -16,23 +16,22 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 function useClient() {
   return useMemo(() => {
-    // capture referrer param from URL (e.g., ?ref=123456)
-    let ref = null;
+    let ref = null
     try {
-      const url = new URL(window.location.href);
-      ref = url.searchParams.get('ref') || url.searchParams.get('referrer') || null;
+      const url = new URL(window.location.href)
+      ref = url.searchParams.get('ref') || url.searchParams.get('referrer') || null
     } catch {}
 
     const headers = {
+      // ✅ pass real Telegram init data (only works inside Telegram Mini App)
       'x-telegram-init-data': WebApp.initData || ''
-    };
-    if (ref) headers['x-referrer'] = ref;
+    }
+    if (ref) headers['x-referrer'] = ref
 
-    const client = axios.create({
+    return axios.create({
       baseURL: API_BASE,
       headers
     })
-    return client
   }, [])
 }
 
@@ -71,7 +70,8 @@ export default function App() {
   const { data: referral, isLoading: refLoading } = useReferrals()
 
   const verifyTask = useMutation({
-    mutationFn: async ({ id, code }) => (await client.post(`/api/tasks/${id}/verify`, { code })).data,
+    mutationFn: async ({ id, code }) =>
+      (await client.post(`/api/tasks/${id}/verify`, { code })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['me'] })
       qc.invalidateQueries({ queryKey: ['tasks'] })
@@ -84,7 +84,8 @@ export default function App() {
   })
 
   const withdraw = useMutation({
-    mutationFn: async ({ method, details }) => (await client.post('/api/withdraw', { method, details })).data,
+    mutationFn: async ({ method, details }) =>
+      (await client.post('/api/withdraw', { method, details })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['me'] })
       setWithdrawOpen(false)
@@ -98,8 +99,8 @@ export default function App() {
 
   useEffect(() => {
     try {
-      WebApp.ready();
-      WebApp.expand();
+      WebApp.ready()
+      WebApp.expand()
     } catch {}
   }, [])
 
@@ -118,8 +119,26 @@ export default function App() {
 
         {/* Tabs */}
         <div className="flex gap-2 mt-1">
-          <button onClick={() => setTab('tasks')} className={`flex-1 py-2 rounded-xl ${'${tab===\'tasks\' ? "bg-accent text-black" : "bg-[#121826] text-subtle"}'}`}>Tasks</button>
-          <button onClick={() => setTab('referrals')} className={`flex-1 py-2 rounded-xl ${'${tab===\'referrals\' ? "bg-accent text-black" : "bg-[#121826] text-subtle"}'}`}>Referrals</button>
+          <button
+            onClick={() => setTab('tasks')}
+            className={`flex-1 py-2 rounded-xl ${
+              tab === 'tasks'
+                ? 'bg-accent text-black'
+                : 'bg-[#121826] text-subtle'
+            }`}
+          >
+            Tasks
+          </button>
+          <button
+            onClick={() => setTab('referrals')}
+            className={`flex-1 py-2 rounded-xl ${
+              tab === 'referrals'
+                ? 'bg-accent text-black'
+                : 'bg-[#121826] text-subtle'
+            }`}
+          >
+            Referrals
+          </button>
         </div>
 
         {tab === 'tasks' ? (
@@ -130,7 +149,10 @@ export default function App() {
               </div>
             ) : (
               <>
-                <BalanceCard balance={balance} onWithdrawClick={() => setWithdrawOpen(true)} />
+                <BalanceCard
+                  balance={balance}
+                  onWithdrawClick={() => setWithdrawOpen(true)}
+                />
                 <div className="mt-3" />
                 <ReferralCard me={me} referral={referral} />
               </>
@@ -145,7 +167,7 @@ export default function App() {
                   <Skeleton className="h-28 rounded-2xl" />
                 </div>
               ) : tasks?.length ? (
-                tasks.map(t => (
+                tasks.map((t) => (
                   <TaskCard
                     key={t.id}
                     task={t}
@@ -154,7 +176,9 @@ export default function App() {
                   />
                 ))
               ) : (
-                <div className="p-4 rounded-2xl bg-card/90 border border-white/5">No tasks available</div>
+                <div className="p-4 rounded-2xl bg-card/90 border border-white/5">
+                  No tasks available
+                </div>
               )}
             </section>
           </>
@@ -173,7 +197,9 @@ export default function App() {
         <WithdrawModal
           open={withdrawOpen}
           onClose={() => setWithdrawOpen(false)}
-          onSubmit={(method, details) => withdraw.mutate({ method, details })}
+          onSubmit={(method, details) =>
+            withdraw.mutate({ method, details })
+          }
           eligible={eligible}
         />
 
@@ -184,5 +210,5 @@ export default function App() {
 
       <Toaster position="top-center" />
     </div>
-  );
+  )
 }
