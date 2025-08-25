@@ -19,11 +19,11 @@ app.use(express.json());
 app.use(helmet());
 app.use(morgan('dev'));
 
-// ✅ Allow local dev + Render production
-const allowedOrigins = [
-  'http://localhost:5173',
-  'https://tele-miniapp.onrender.com'
-];
+// ✅ Allow local dev + production via env
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -37,7 +37,6 @@ app.use(cors({
 }));
 
 // --- MongoDB ---
-
 const mongoUri = process.env.MONGODB_URI || '';
 if (!mongoUri) {
   console.warn('⚠️ MONGODB_URI is not set.');
@@ -122,11 +121,11 @@ function verifyTelegramInitData(initData, botToken) {
   }
 }
 
-// --- API Auth Middleware (applies only to /api/*) ---
+// --- API Auth Middleware ---
 function telegramAuth(req, res, next) {
   const initData = req.header('x-telegram-init-data') || req.query.initData;
 
-  // ✅ Allow dev
+  // ✅ Allow dev without initData
   if ((!initData || initData === '') && process.env.NODE_ENV !== 'production') {
     req.tgUser = { id: "999999", first_name: "Dev", username: "localtester" };
     return next();
@@ -175,11 +174,15 @@ api.get('/tasks', async (req, res) => {
 
 app.use('/api', api);
 
-// --- Serve Frontend ---
-app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'client', 'dist', 'index.html'));
-});
+// --- Healthcheck (for Render) ---
+app.get('/healthz', (_, res) => res.json({ ok: true }));
+
+// --- Serve Frontend (optional) ---
+if (process.env.SERVE_CLIENT === 'true') {
+  const dist = path.join(__dirname, '..', 'client', 'dist');
+  app.use(express.static(dist));
+  app.get('*', (_, res) => res.sendFile(path.join(dist, 'index.html')));
+}
 
 // --- Start ---
 const port = process.env.PORT || 8080;
