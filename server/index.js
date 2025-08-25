@@ -122,16 +122,29 @@ function verifyTelegramInitData(initData, botToken) {
   }
 }
 
-// Middleware to require valid Telegram init data
+// Middleware to require valid Telegram init data (but allow local dev)
 app.use((req, res, next) => {
   const initData = req.header('x-telegram-init-data') || req.query.initData;
+
+  // In dev mode, allow fallback user
+  if (!initData && process.env.NODE_ENV !== 'production') {
+    req.tgUser = {
+      id: "999999",
+      first_name: "Dev",
+      username: "localtester"
+    };
+    return next();
+  }
+
   if (!initData) {
     return res.status(401).json({ error: 'Missing Telegram init data' });
   }
+
   const ok = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN || '');
   if (!ok) {
     return res.status(401).json({ error: 'Invalid Telegram init data' });
   }
+
   const parsed = parseInitData(initData);
   try {
     const user = JSON.parse(parsed.user || '{}');
@@ -141,6 +154,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+
 
 // --- Routes (unchanged) ---
 // (keep your /api/me, /api/tasks, /api/tasks/:id/verify, /api/withdraw, /api/withdrawals here)
