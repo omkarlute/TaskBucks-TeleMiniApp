@@ -37,12 +37,14 @@ app.use(cors({
 }));
 
 // --- MongoDB ---
-mongoose.connect(mongoUri, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+
+const mongoUri = process.env.MONGODB_URI || '';
+if (!mongoUri) {
+  console.warn('⚠️ MONGODB_URI is not set.');
+}
+mongoose.connect(mongoUri, {})
   .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('❌ MongoDB error:', err));
+  .catch(err => console.error('MongoDB error:', err));
 
 // --- Schemas ---
 const TaskSchema = new mongoose.Schema({
