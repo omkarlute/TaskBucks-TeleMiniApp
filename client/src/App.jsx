@@ -40,7 +40,7 @@ function useMe() {
   const client = useClient()
   return useQuery({
     queryKey: ['me'],
-    queryFn: async () => (await client.get('/api/me')).data.user
+    queryFn: async () => (await client.get('/me')).data.user
   })
 }
 
@@ -48,7 +48,7 @@ function useReferrals() {
   const client = useClient()
   return useQuery({
     queryKey: ['referrals'],
-    queryFn: async () => (await client.get('/api/referrals')).data
+    queryFn: async () => (await client.get('/referrals')).data
   })
 }
 
@@ -56,10 +56,9 @@ function useTasks() {
   const client = useClient()
   return useQuery({
     queryKey: ['tasks'],
-    queryFn: async () => (await client.get('/api/tasks')).data.tasks
+    queryFn: async () => (await client.get('/tasks')).data.tasks
   })
 }
-
 export default function App() {
   const [withdrawOpen, setWithdrawOpen] = useState(false)
   const client = useClient()
