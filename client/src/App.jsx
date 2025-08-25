@@ -71,7 +71,7 @@ export default function App() {
 
   const verifyTask = useMutation({
     mutationFn: async ({ id, code }) =>
-      (await client.post(`/api/tasks/${id}/verify`, { code })).data,
+     (await client.post(`/tasks/${id}/verify`, { code })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['me'] })
       qc.invalidateQueries({ queryKey: ['tasks'] })
@@ -85,7 +85,7 @@ export default function App() {
 
   const withdraw = useMutation({
     mutationFn: async ({ method, details }) =>
-      (await client.post('/api/withdraw', { method, details })).data,
+    (await client.post('/withdraw', { method, details })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['me'] })
       setWithdrawOpen(false)
