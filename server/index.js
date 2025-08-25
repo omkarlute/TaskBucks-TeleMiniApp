@@ -126,8 +126,8 @@ function verifyTelegramInitData(initData, botToken) {
 app.use((req, res, next) => {
   const initData = req.header('x-telegram-init-data') || req.query.initData;
 
-  // In dev mode, allow fallback user
-  if (!initData && process.env.NODE_ENV !== 'production') {
+  // ✅ Allow dev fallback (browser, Vite preview)
+  if ((!initData || initData === '') && process.env.NODE_ENV !== 'production') {
     req.tgUser = {
       id: "999999",
       first_name: "Dev",
@@ -154,6 +154,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+
 
 
 // --- Routes (unchanged) ---
