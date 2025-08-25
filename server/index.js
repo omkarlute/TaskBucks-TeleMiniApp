@@ -19,19 +19,19 @@ app.use(express.json());
 app.use(helmet());
 app.use(morgan('dev'));
 
-const allowedOrigin = process.env.ALLOWED_ORIGIN || 'http://localhost:5173';
+const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
 app.use(cors({ origin: allowedOrigin, credentials: true }));
 
 // MongoDB connection
 const mongoUri = process.env.MONGODB_URI || '';
 if (!mongoUri) {
-  console.warn('MONGODB_URI is not set. The server will not function properly without it.');
+  console.warn('⚠️ MONGODB_URI is not set. The server will not function properly without it.');
 }
-mongoose.connect(mongoUri, { })
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
+mongoose.connect(mongoUri, {})
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('❌ MongoDB connection error:', err));
 
-// Schemas (with referral fields)
+// ===== Schemas (with referral fields) =====
 const TaskSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   title: String,
@@ -47,9 +47,9 @@ const UserSchema = new mongoose.Schema({
   username: String,
   balance: { type: Number, default: 0 },
   completedTaskIds: [String],
-  referrerId: { type: String, default: null }, // Telegram id of who referred this user
-  referrals: [String], // list of user ids this user referred
-  referralEarnings: { type: Number, default: 0 } // total earned from referrals
+  referrerId: { type: String, default: null }, 
+  referrals: [String], 
+  referralEarnings: { type: Number, default: 0 }
 });
 const WithdrawalSchema = new mongoose.Schema({
   id: { type: String, unique: true },
@@ -65,21 +65,21 @@ const Task = mongoose.model('Task', TaskSchema);
 const User = mongoose.model('User', UserSchema);
 const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
 
-// Helper: init seed tasks if empty
+// ===== Seed tasks if none exist =====
 async function seedTasks() {
   const count = await Task.countDocuments();
   if (count === 0) {
     await Task.create([
-      { id: 't1', title: 'Visit Linkvertise Task #1', link: 'https://linkvertise.com/123/landing', reward: 0.25, code: '1212', active: true },
-      { id: 't2', title: 'Visit Linkvertise Task #2', link: 'https://linkvertise.com/456/landing', reward: 0.3, code: '3434', active: true },
-      { id: 't3', title: 'Partner Offer', link: 'https://example.com/offer', reward: 0.5, code: '5656', active: true }
+      { id: 't1', title: 'Visit Linkvertise Task #1', link: 'https://linkvertise.com/123/landing', reward: 0.25, code: '1212' },
+      { id: 't2', title: 'Visit Linkvertise Task #2', link: 'https://linkvertise.com/456/landing', reward: 0.3, code: '3434' },
+      { id: 't3', title: 'Partner Offer', link: 'https://example.com/offer', reward: 0.5, code: '5656' }
     ]);
-    console.log('Seeded tasks');
+    console.log('✅ Seeded tasks');
   }
 }
 seedTasks().catch(console.error);
 
-// --- Telegram initData verification ---
+// ===== Telegram initData verification =====
 function getCheckString(params) {
   const sorted = Object.keys(params).sort();
   return sorted.map(k => `${k}=${params[k]}`).join('\n');
@@ -103,45 +103,37 @@ function verifyTelegramInitData(initData, botToken) {
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
     const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
     return hmac === hash;
-  } catch (e) {
+  } catch {
     return false;
   }
 }
 
-// Middleware to require valid Telegram init data
+// ===== Middleware: validate Telegram user =====
 app.use((req, res, next) => {
   const initData = req.header('x-telegram-init-data') || req.query.initData;
-  if (!initData) {
-    return res.status(401).json({ error: 'Missing Telegram init data' });
-  }
+  if (!initData) return res.status(401).json({ error: 'Missing Telegram init data' });
+
   const ok = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN || '');
-  if (!ok) {
-    return res.status(401).json({ error: 'Invalid Telegram init data' });
-  }
+  if (!ok) return res.status(401).json({ error: 'Invalid Telegram init data' });
+
   const parsed = parseInitData(initData);
   try {
-    const user = JSON.parse(parsed.user || '{}');
-    req.tgUser = user;
+    req.tgUser = JSON.parse(parsed.user || '{}');
   } catch {
     req.tgUser = null;
   }
   next();
 });
 
-// Ensure user exists and link referrals (checks x-referrer header or ?ref query)
+// ===== Ensure User + Referrals =====
 async function ensureUser(tgUser, req) {
   const uid = String(tgUser?.id || '');
   if (!uid) throw new Error('No Telegram user id');
+
   let user = await User.findOne({ id: uid });
   if (!user) {
-    // Create new user. Check referral header (x-referrer or query param ref)
-    const refHeader = (req && (req.header('x-referrer') || req.query.ref || req.query.referrer)) || null;
-    let referrerId = null;
-    if (refHeader) {
-      try {
-        referrerId = String(refHeader).replace(/[^0-9]/g, '') || null;
-      } catch { referrerId = null }
-    }
+    const refHeader = req?.header('x-referrer') || req?.query?.ref || req?.query?.referrer;
+    let referrerId = refHeader ? String(refHeader).replace(/[^0-9]/g, '') : null;
 
     user = await User.create({
       id: uid,
@@ -155,28 +147,22 @@ async function ensureUser(tgUser, req) {
       referralEarnings: 0
     });
 
-    // If valid referrer and not self, attach
-    try {
-      if (referrerId && referrerId !== uid) {
-        const refUser = await User.findOne({ id: referrerId });
-        if (refUser) {
-          user.referrerId = referrerId;
-          await user.save();
-          if (!refUser.referrals) refUser.referrals = [];
-          if (!refUser.referrals.includes(uid)) {
-            refUser.referrals.push(uid);
-            await refUser.save();
-          }
+    if (referrerId && referrerId !== uid) {
+      const refUser = await User.findOne({ id: referrerId });
+      if (refUser) {
+        user.referrerId = referrerId;
+        await user.save();
+        if (!refUser.referrals.includes(uid)) {
+          refUser.referrals.push(uid);
+          await refUser.save();
         }
       }
-    } catch (e) {
-      console.warn('Referral linking error', e.message);
     }
   }
   return user;
 }
 
-// Routes
+// ===== API Routes =====
 app.get('/api/me', async (req, res) => {
   try {
     const user = await ensureUser(req.tgUser, req);
@@ -190,14 +176,15 @@ app.get('/api/tasks', async (req, res) => {
   try {
     const user = await ensureUser(req.tgUser, req);
     const tasks = await Task.find({ active: true }).lean();
-    const out = tasks.map(t => ({
-      id: t.id,
-      title: t.title,
-      link: t.link,
-      reward: t.reward,
-      status: user.completedTaskIds.includes(t.id) ? 'completed' : 'pending'
-    }));
-    res.json({ tasks: out });
+    res.json({
+      tasks: tasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        link: t.link,
+        reward: t.reward,
+        status: user.completedTaskIds.includes(t.id) ? 'completed' : 'pending'
+      }))
+    });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -210,29 +197,21 @@ app.post('/api/tasks/:id/verify', async (req, res) => {
     const user = await ensureUser(req.tgUser, req);
     const task = await Task.findOne({ id, active: true });
     if (!task) return res.status(404).json({ error: 'Task not found' });
-    if (user.completedTaskIds.includes(id)) {
-      return res.status(400).json({ error: 'Task already completed' });
-    }
-    if (String(code || '').trim() !== String(task.code)) {
-      return res.status(400).json({ error: 'Incorrect code' });
-    }
+    if (user.completedTaskIds.includes(id)) return res.status(400).json({ error: 'Task already completed' });
+    if (String(code).trim() !== task.code) return res.status(400).json({ error: 'Incorrect code' });
+
     user.completedTaskIds.push(id);
-    user.balance = Number((user.balance + Number(task.reward)).toFixed(2));
+    user.balance = +(user.balance + task.reward).toFixed(2);
     await user.save();
 
-    // Referral: credit 5% of task.reward to referrer (lifetime referral)
-    try {
-      if (user.referrerId) {
-        const ref = await User.findOne({ id: user.referrerId });
-        if (ref) {
-          const bonus = Number((Number(task.reward) * 0.05).toFixed(2));
-          ref.balance = Number((ref.balance + bonus).toFixed(2));
-          ref.referralEarnings = Number((ref.referralEarnings || 0) + bonus);
-          await ref.save();
-        }
+    if (user.referrerId) {
+      const ref = await User.findOne({ id: user.referrerId });
+      if (ref) {
+        const bonus = +(task.reward * 0.05).toFixed(2);
+        ref.balance = +(ref.balance + bonus).toFixed(2);
+        ref.referralEarnings = +(ref.referralEarnings + bonus).toFixed(2);
+        await ref.save();
       }
-    } catch (e) {
-      console.warn('Referral credit error', e.message);
     }
 
     res.json({ success: true, balance: user.balance });
@@ -245,19 +224,13 @@ app.post('/api/withdraw', async (req, res) => {
   const { method, details } = req.body || {};
   try {
     const user = await ensureUser(req.tgUser, req);
-    const min = 5;
-    if (user.balance < min) {
-      return res.status(400).json({ error: `Minimum withdraw is $${min}` });
-    }
-    if (!['paypal', 'crypto'].includes(method)) {
-      return res.status(400).json({ error: 'Invalid method' });
-    }
-    if (!details || typeof details !== 'object') {
-      return res.status(400).json({ error: 'Missing details' });
-    }
+    if (user.balance < 5) return res.status(400).json({ error: 'Minimum withdraw is $5' });
+    if (!['paypal', 'crypto'].includes(method)) return res.status(400).json({ error: 'Invalid method' });
+
     const amount = user.balance;
     user.balance = 0;
     await user.save();
+
     const w = await Withdrawal.create({
       id: nanoid(),
       userId: user.id,
@@ -267,6 +240,7 @@ app.post('/api/withdraw', async (req, res) => {
       status: 'pending',
       createdAt: new Date()
     });
+
     res.json({ success: true, withdrawal: w });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -283,13 +257,14 @@ app.get('/api/withdrawals', async (req, res) => {
   }
 });
 
-// Serve frontend in production (client/dist)
-app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
+// ===== Serve frontend (production) =====
+const distPath = path.join(__dirname, '..', 'client', 'dist');
+app.use(express.static(distPath));
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'client', 'dist', 'index.html'));
+  res.sendFile(path.join(distPath, 'index.html'));
 });
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
-  console.log('Server running on port', port);
+  console.log(`🚀 Server running on port ${port}`);
 });
