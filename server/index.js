@@ -36,16 +36,16 @@ app.use(cors({
   credentials: true
 }));
 
-// MongoDB connection
+// --- MongoDB ---
 const mongoUri = process.env.MONGODB_URI || '';
 if (!mongoUri) {
-  console.warn('MONGODB_URI is not set. The server will not function properly without it.');
+  console.warn('⚠️ MONGODB_URI is not set.');
 }
 mongoose.connect(mongoUri, {})
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB connection error:', err));
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('MongoDB error:', err));
 
-// Schemas (with referral fields)
+// --- Schemas ---
 const TaskSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   title: String,
@@ -74,26 +74,25 @@ const WithdrawalSchema = new mongoose.Schema({
   status: String,
   createdAt: Date
 });
-
 const Task = mongoose.model('Task', TaskSchema);
 const User = mongoose.model('User', UserSchema);
 const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
 
-// Helper: init seed tasks if empty
+// --- Seed Tasks ---
 async function seedTasks() {
   const count = await Task.countDocuments();
   if (count === 0) {
     await Task.create([
-      { id: 't1', title: 'Visit Linkvertise Task #1', link: 'https://linkvertise.com/123/landing', reward: 0.25, code: '1212', active: true },
-      { id: 't2', title: 'Visit Linkvertise Task #2', link: 'https://linkvertise.com/456/landing', reward: 0.3, code: '3434', active: true },
-      { id: 't3', title: 'Partner Offer', link: 'https://example.com/offer', reward: 0.5, code: '5656', active: true }
+      { id: 't1', title: 'Visit Linkvertise Task #1', link: 'https://linkvertise.com/123/landing', reward: 0.25, code: '1212' },
+      { id: 't2', title: 'Visit Linkvertise Task #2', link: 'https://linkvertise.com/456/landing', reward: 0.3, code: '3434' },
+      { id: 't3', title: 'Partner Offer', link: 'https://example.com/offer', reward: 0.5, code: '5656' }
     ]);
-    console.log('Seeded tasks');
+    console.log('✅ Seeded tasks');
   }
 }
 seedTasks().catch(console.error);
 
-// --- Telegram initData verification ---
+// --- Telegram initData ---
 function getCheckString(params) {
   const sorted = Object.keys(params).sort();
   return sorted.map(k => `${k}=${params[k]}`).join('\n');
@@ -122,17 +121,13 @@ function verifyTelegramInitData(initData, botToken) {
   }
 }
 
-// Middleware to require valid Telegram init data (but allow local dev)
-app.use((req, res, next) => {
+// --- API Auth Middleware (applies only to /api/*) ---
+function telegramAuth(req, res, next) {
   const initData = req.header('x-telegram-init-data') || req.query.initData;
 
-  // ✅ Allow dev fallback (browser, Vite preview)
+  // ✅ Allow dev
   if ((!initData || initData === '') && process.env.NODE_ENV !== 'production') {
-    req.tgUser = {
-      id: "999999",
-      first_name: "Dev",
-      username: "localtester"
-    };
+    req.tgUser = { id: "999999", first_name: "Dev", username: "localtester" };
     return next();
   }
 
@@ -147,26 +142,46 @@ app.use((req, res, next) => {
 
   const parsed = parseInitData(initData);
   try {
-    const user = JSON.parse(parsed.user || '{}');
-    req.tgUser = user;
+    req.tgUser = JSON.parse(parsed.user || '{}');
   } catch {
     req.tgUser = null;
   }
   next();
+}
+
+// --- API Routes ---
+const api = express.Router();
+api.use(telegramAuth);
+
+api.get('/me', async (req, res) => {
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) {
+    user = await User.create({
+      id: req.tgUser.id,
+      first_name: req.tgUser.first_name,
+      username: req.tgUser.username
+    });
+  }
+  res.json({ user });
 });
 
+api.get('/tasks', async (req, res) => {
+  const tasks = await Task.find({ active: true });
+  res.json({ tasks });
+});
 
+// TODO: add /api/tasks/:id/verify, /api/withdraw, etc.
 
-// --- Routes (unchanged) ---
-// (keep your /api/me, /api/tasks, /api/tasks/:id/verify, /api/withdraw, /api/withdrawals here)
+app.use('/api', api);
 
-// Serve frontend in production (client/dist)
+// --- Serve Frontend ---
 app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'client', 'dist', 'index.html'));
 });
 
+// --- Start ---
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
-  console.log('Server running on port', port);
+  console.log(`✅ Server running on port ${port}`);
 });
