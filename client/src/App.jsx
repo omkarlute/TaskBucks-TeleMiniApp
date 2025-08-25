@@ -24,7 +24,8 @@ function useClient() {
 
     const headers = {
       // ✅ pass real Telegram init data (only works inside Telegram Mini App)
-      'x-telegram-init-data': WebApp.initData || ''
+     'x-telegram-init-data': WebApp.initData || window.Telegram?.WebApp?.initData || ''
+
     }
     if (ref) headers['x-referrer'] = ref
 
