@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import jwt from 'jsonwebtoken';
+import cookieParser from 'cookie-parser';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
@@ -17,8 +19,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 app.use(helmet());
+app.use(cookieParser());
 app.use(morgan('dev'));
-app.use(cors());
+app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true }));
 
 // --- Mongo ---
 const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tasktoearn';
@@ -147,6 +150,23 @@ function telegramAuth(req, res, next) {
 const api = express.Router();
 api.use(telegramAuth);
 
+
+// Admin auth endpoints
+api.post('/admin/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  const u = process.env.ADMIN_USERNAME || 'admin';
+  const p = process.env.ADMIN_PASSWORD || 'password';
+  if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
+  if (username !== u || password !== p) return res.status(401).json({ error: 'Invalid credentials' });
+  const token = jwt.sign({ role: 'admin', username }, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret', { expiresIn: '7d' });
+  res.cookie('admin_token', token, { httpOnly: true, sameSite: 'lax', secure: false, maxAge: 7*24*60*60*1000 });
+  return res.json({ ok: true });
+});
+
+api.post('/admin/logout', (req, res) => {
+  res.clearCookie('admin_token');
+  res.json({ ok: true });
+});
 api.get('/me', async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
@@ -244,10 +264,18 @@ api.get('/referrals', async (req, res) => {
   res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
 });
 
-// Admin routes (protected by x-admin-secret header matching ADMIN_SECRET env)
+// Admin routes (JWT cookie-based auth)
 function adminAuth(req, res, next) {
-  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
-  next();
+  try {
+    const token = req.cookies?.admin_token || '';
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    const payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret');
+    if (payload?.role !== 'admin') return res.status(401).json({ error: 'Unauthorized' });
+    req.admin = { username: payload.username };
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 }
 
 api.post('/admin/seed', adminAuth, async (req, res) => {
