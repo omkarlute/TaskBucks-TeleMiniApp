@@ -179,8 +179,8 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// User endpoints (with telegram auth)
-app.get('/api/me', telegramAuth, async (req, res) => {
+// User endpoints (with telegram auth) - Handle both /api and direct routes
+const meHandler = async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
     user = await User.create({
@@ -203,14 +203,14 @@ app.get('/api/me', telegramAuth, async (req, res) => {
     }
   }
   res.json({ user });
-});
+};
 
-app.get('/api/tasks', telegramAuth, async (req, res) => {
+const tasksHandler = async (req, res) => {
   const tasks = await Task.find({ active: true });
   res.json({ tasks });
-});
+};
 
-app.post('/api/tasks/:id/verify', telegramAuth, async (req, res) => {
+const taskVerifyHandler = async (req, res) => {
   const taskId = req.params.id;
   const { code } = req.body || {};
   const task = await Task.findOne({ id: taskId, active: true });
@@ -241,9 +241,9 @@ app.post('/api/tasks/:id/verify', telegramAuth, async (req, res) => {
   }
 
   res.json({ ok: true });
-});
+};
 
-app.post('/api/withdraw', telegramAuth, async (req, res) => {
+const withdrawHandler = async (req, res) => {
   const { method, details } = req.body || {};
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -263,19 +263,38 @@ app.post('/api/withdraw', telegramAuth, async (req, res) => {
   user.balance = 0;
   await user.save();
   res.json({ ok: true, withdraw: w });
-});
+};
 
-app.get('/api/withdraws', telegramAuth, async (req, res) => {
+const withdrawsHandler = async (req, res) => {
   const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
   res.json({ withdraws: list });
-});
+};
 
-app.get('/api/referrals', telegramAuth, async (req, res) => {
+const referralsHandler = async (req, res) => {
   const user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
   const refs = await User.find({ referrerId: user.id }).select('id first_name username');
   res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
-});
+};
+
+// Apply routes to both /api and direct paths
+app.get('/api/me', telegramAuth, meHandler);
+app.get('/me', telegramAuth, meHandler);
+
+app.get('/api/tasks', telegramAuth, tasksHandler);
+app.get('/tasks', telegramAuth, tasksHandler);
+
+app.post('/api/tasks/:id/verify', telegramAuth, taskVerifyHandler);
+app.post('/tasks/:id/verify', telegramAuth, taskVerifyHandler);
+
+app.post('/api/withdraw', telegramAuth, withdrawHandler);
+app.post('/withdraw', telegramAuth, withdrawHandler);
+
+app.get('/api/withdraws', telegramAuth, withdrawsHandler);
+app.get('/withdraws', telegramAuth, withdrawsHandler);
+
+app.get('/api/referrals', telegramAuth, referralsHandler);
+app.get('/referrals', telegramAuth, referralsHandler);
 
 // Admin routes
 app.post('/api/admin/seed', adminAuth, async (req, res) => {
