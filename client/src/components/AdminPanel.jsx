@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import useClient from '../useClient.js'
@@ -6,17 +7,41 @@ import { toast } from 'react-hot-toast'
 export default function AdminPanel() {
   const client = useClient()
   const qc = useQueryClient()
-  const [secret, setSecret] = useState(localStorage.getItem('adminSecret') || '')
+  const [creds, setCreds] = useState({ username: '', password: '' })
   const [task, setTask] = useState({ title:'', link:'', reward:'', code:'' })
+  const [loggedIn, setLoggedIn] = useState(false)
 
-  const saveSecret = () => {
-    localStorage.setItem('adminSecret', secret)
-    try { client.defaults.headers['x-admin-secret'] = secret } catch(e) {}
-    qc.invalidateQueries({ queryKey: ['admin_tasks','admin_withdraws','tasks'] })
-    toast.success('Admin secret saved.')
-  }
+  // Check session by calling a protected endpoint
+  const session = useQuery({
+    queryKey: ['admin_session'],
+    queryFn: async () => {
+      try {
+        // a lightweight protected call
+        await client.get('/admin/tasks')
+        setLoggedIn(true)
+        return { ok: true }
+      } catch (e) {
+        setLoggedIn(false)
+        throw e
+      }
+    },
+    retry: false
+  })
+
+  const login = useMutation({
+    mutationFn: async () => (await client.post('/admin/login', creds)).data,
+    onSuccess: () => { toast.success('Logged in'); setLoggedIn(true); qc.invalidateQueries({ queryKey: ['admin_tasks','admin_session'] }) },
+    onError: (e) => toast.error(e?.response?.data?.error || 'Login failed')
+  })
+
+  const logout = useMutation({
+    mutationFn: async () => (await client.post('/admin/logout')).data,
+    onSuccess: () => { toast.success('Logged out'); setLoggedIn(false); qc.invalidateQueries({ queryKey: ['admin_tasks','admin_session'] }) },
+    onError: () => toast.error('Logout failed')
+  })
 
   const tasks = useQuery({
+    enabled: loggedIn,
     queryKey: ['admin_tasks'],
     queryFn: async () => (await client.get('/admin/tasks')).data.tasks || []
   })
@@ -27,64 +52,49 @@ export default function AdminPanel() {
     onError: (e) => toast.error(e?.response?.data?.error || 'Failed')
   })
 
-  const seedTasks = useMutation({
-    mutationFn: async () => (await client.post('/admin/seed')).data,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tasks'] }); toast.success('Seeded tasks'); },
-    onError: (e) => toast.error(e?.response?.data?.error || 'Failed')
-  })
-
-  const withdrawals = useQuery({
-    queryKey: ['admin_withdraws'],
-    queryFn: async () => (await client.get('/admin/withdrawals')).data.withdrawals || []
-  })
-
-  const updateStatus = useMutation({
-    mutationFn: async ({ id, status }) => (await client.post(`/admin/withdrawals/${id}/status`, { status })).data,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin_withdraws'] }); toast.success('Updated') },
-    onError: (e) => toast.error(e?.response?.data?.error || 'Failed')
-  })
+  if (!loggedIn) {
+    return (
+      <div className="bg-[#0b0f17] rounded-2xl p-4 border border-[#1f2937]">
+        <h2 className="text-lg font-semibold mb-3">Admin Login</h2>
+        <div className="space-y-2">
+          <input className="w-full px-3 py-2 rounded-xl bg-[#0b0f17] border border-[#1f2937]" placeholder="Username" value={creds.username} onChange={e=>setCreds({...creds, username:e.target.value})} />
+          <input className="w-full px-3 py-2 rounded-xl bg-[#0b0f17] border border-[#1f2937]" type="password" placeholder="Password" value={creds.password} onChange={e=>setCreds({...creds, password:e.target.value})} />
+          <button onClick={()=>login.mutate()} className="w-full px-4 py-2 rounded-xl bg-accent text-black shadow-glow">Login</button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
-      <div className="p-4 rounded-2xl bg-card/90 border border-white/5">
-        <h3 className="font-semibold">Admin Access</h3>
-        <div className="mt-2 flex gap-2">
-          <input value={secret} onChange={e=>setSecret(e.target.value)} placeholder="Enter ADMIN_SECRET" className="flex-1 bg-[#0b0f17] rounded-xl px-3 py-2 border border-[#1f2937]" />
-          <button onClick={saveSecret} className="px-3 py-2 rounded-xl bg-accent text-black shadow-glow">Save</button>
+      <div className="bg-[#0b0f17] rounded-2xl p-4 border border-[#1f2937]">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Admin Panel</h2>
+          <button onClick={()=>logout.mutate()} className="px-3 py-1.5 rounded-lg bg-white/10 text-white text-sm">Logout</button>
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-2">
+          <input className="px-3 py-2 rounded-xl bg-[#0b0f17] border border-[#1f2937]" placeholder="Title" value={task.title} onChange={e=>setTask({...task, title:e.target.value})} />
+          <input className="px-3 py-2 rounded-xl bg-[#0b0f17] border border-[#1f2937]" placeholder="Link" value={task.link} onChange={e=>setTask({...task, link:e.target.value})} />
+          <input className="px-3 py-2 rounded-xl bg-[#0b0f17] border border-[#1f2937]" placeholder="Reward" type="number" value={task.reward} onChange={e=>setTask({...task, reward:e.target.value})} />
+          <input className="px-3 py-2 rounded-xl bg-[#0b0f17] border border-[#1f2937]" placeholder="Completion Code" value={task.code} onChange={e=>setTask({...task, code:e.target.value})} />
+          <button onClick={()=>createTask.mutate()} className="px-4 py-2 rounded-xl bg-accent text-black shadow-glow">Add Task</button>
         </div>
       </div>
 
-      <div className="p-4 rounded-2xl bg-card/90 border border-white/5">
-        <h3 className="font-semibold">Create Task</h3>
-        <div className="mt-2 grid grid-cols-1 sm:grid-cols-4 gap-2">
-          <input value={task.title} onChange={e=>setTask({...task, title:e.target.value})} placeholder="Title" className="bg-[#0b0f17] rounded-xl px-3 py-2 border border-[#1f2937]" />
-          <input value={task.link} onChange={e=>setTask({...task, link:e.target.value})} placeholder="Link" className="bg-[#0b0f17] rounded-xl px-3 py-2 border border-[#1f2937]" />
-          <input value={task.reward} onChange={e=>setTask({...task, reward:e.target.value})} placeholder="Reward (e.g., 0.50)" className="bg-[#0b0f17] rounded-xl px-3 py-2 border border-[#1f2937]" />
-          <input value={task.code} onChange={e=>setTask({...task, code:e.target.value})} placeholder="Verify Code" className="bg-[#0b0f17] rounded-xl px-3 py-2 border border-[#1f2937]" />
-        </div>
-        <button onClick={()=>createTask.mutate()} className="mt-2 px-3 py-2 rounded-xl bg-accent text-black shadow-glow">Add Task</button>
-        <button onClick={()=>seedTasks.mutate()} className="mt-2 ml-2 px-3 py-2 rounded-xl bg-[#6b7280] text-white">Seed Tasks</button>
-      </div>
-
-      <div className="p-4 rounded-2xl bg-card/90 border border-white/5">
-        <h3 className="font-semibold">Withdrawals</h3>
-        <div className="mt-2 space-y-2">
-          {withdrawals.data?.map(w => (
-            <div key={w.id} className="p-3 rounded-xl bg-[#0b0f17] border border-white/5 flex items-center justify-between">
-              <div>
-                <div className="text-sm font-medium">${w.amount.toFixed(2)} — {w.userId}</div>
-                <div className="text-xs text-subtle">{w.method} • {new Date(w.createdAt).toLocaleString()}</div>
+      <div className="bg-[#0b0f17] rounded-2xl p-4 border border-[#1f2937]">
+        <h3 className="font-medium mb-2">All Tasks</h3>
+        {tasks.isLoading ? <div className="text-subtle text-sm">Loading…</div> : (
+          <div className="space-y-2">
+            {tasks.data?.map(t => (
+              <div key={t.id} className="p-3 rounded-xl bg-white/5">
+                <div className="font-medium">{t.title}</div>
+                <div className="text-xs text-subtle break-all">{t.link}</div>
+                <div className="text-xs text-subtle">Reward: {t.reward}</div>
+                <div className="text-xs text-subtle">Active: {String(t.active)}</div>
               </div>
-              <div className="flex gap-2">
-                {['pending','approved','completed','rejected'].map(s => (
-                  <button key={s} onClick={()=>updateStatus.mutate({ id: w.id, status: s })} className={"px-2 py-1 rounded-lg text-xs " + (w.status===s?'bg-white/20':'bg-white/10')}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
