@@ -11,46 +11,12 @@ import WithdrawModal from './components/WithdrawModal.jsx'
 import ReferralCard from './components/ReferralCard.jsx'
 import ReferralView from './components/ReferralView.jsx'
 import { Skeleton } from './components/Skeleton.jsx'
+import useClient from './useClient.js'
 import WithdrawHistory from './components/WithdrawHistory.jsx'
 import AdminPanel from './components/AdminPanel.jsx'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
-function useClient() {
-  return useMemo(() => {
-    let ref = null
-    try {
-      const url = new URL(window.location.href)
-      ref =
-        url.searchParams.get('ref') ||
-        url.searchParams.get('referrer') ||
-        null
-    } catch {}
-
-    // Generate or reuse anonymous web id so app can run outside Telegram
-    let anonId = localStorage.getItem('anonId')
-    if (!anonId) {
-      anonId = 'web_' + Math.random().toString(36).slice(2, 10)
-      localStorage.setItem('anonId', anonId)
-    }
-
-    const adminSecret = localStorage.getItem('adminSecret') || ''
-
-    const headers = {
-      'x-telegram-init-data':
-        WebApp.initData || window.Telegram?.WebApp?.initData || ''
-    }
-
-    if (anonId) headers['x-anon-id'] = anonId
-    if (adminSecret) headers['x-admin-secret'] = adminSecret
-    if (ref) headers['x-referrer'] = ref
-
-    return axios.create({
-      baseURL: API_BASE,
-      headers
-    })
-  }, [])
-}
 
 function useMe() {
   const client = useClient()
@@ -75,7 +41,6 @@ function useTasks() {
     queryFn: async () => (await client.get('/tasks')).data.tasks
   })
 }
-
 export default function App() {
   const [withdrawOpen, setWithdrawOpen] = useState(false)
   const client = useClient()
@@ -86,9 +51,19 @@ export default function App() {
   const { data: tasks, isLoading: tasksLoading } = useTasks()
   const { data: referral, isLoading: refLoading } = useReferrals()
 
-  const verifyTask = useMutation({
+  
+  const startTask = useMutation({
+    mutationFn: async (id) => (await client.post(`/tasks/${id}/start`)).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+    },
+    onError: (err) => {
+      // ignore start errors (idempotent)
+    }
+  });
+const verifyTask = useMutation({
     mutationFn: async ({ id, code }) =>
-      (await client.post(`/tasks/${id}/verify`, { code })).data,
+     (await client.post(`/tasks/${id}/verify`, { code })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['me'] })
       qc.invalidateQueries({ queryKey: ['tasks'] })
@@ -102,7 +77,7 @@ export default function App() {
 
   const withdraw = useMutation({
     mutationFn: async ({ method, details }) =>
-      (await client.post('/withdraw', { method, details })).data,
+    (await client.post('/withdraw', { method, details })).data,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['me'] })
       setWithdrawOpen(false)
@@ -125,49 +100,52 @@ export default function App() {
   const eligible = balance >= 5
 
   return (
-    <div className="min-h-[100dvh] flex flex-col">
-      {/* Background */}
+    <div className="min-h-[100dvh]">
       <div className="fixed inset-0 -z-10">
         <div className="absolute inset-0 bg-gradient-to-b from-[#0b0f17] to-[#0b0f17]" />
         <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[600px] h-[600px] rounded-full bg-accent/10 blur-[120px]" />
       </div>
 
-      <div className="max-w-xl mx-auto p-4 space-y-4 flex-1">
+      <div className="max-w-xl mx-auto p-4 space-y-4">
         <Header />
 
         {/* Tabs */}
-        <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
-          {['tasks', 'referrals', 'withdrawals'].map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`py-2 rounded-xl border ${
-                tab === t
-                  ? 'bg-white/10 border-white/20'
-                  : 'bg-card/90 border-white/5'
-              }`}
-            >
-              {t.charAt(0).toUpperCase() + t.slice(1)}
-            </button>
-          ))}
-          {/* Admin tab shows only if adminSecret set */}
-          {typeof window !== 'undefined' &&
-          localStorage.getItem('adminSecret') ? (
-            <button
-              onClick={() => setTab('admin')}
-              className={`py-2 rounded-xl border ${
-                tab === 'admin'
-                  ? 'bg-white/10 border-white/20'
-                  : 'bg-card/90 border-white/5'
-              }`}
-            >
-              Admin
-            </button>
-          ) : null}
+        <div className="flex gap-2 mt-1">
+          <button
+            onClick={() => setTab('tasks')}
+            className={`flex-1 py-2 rounded-xl ${
+              tab === 'tasks'
+                ? 'bg-accent text-black'
+                : 'bg-[#121826] text-subtle'
+            }`}
+          >
+            Tasks
+          </button>
+          <button
+            onClick={() => setTab('referrals')}
+            className={`flex-1 py-2 rounded-xl ${
+              tab === 'referrals'
+                ? 'bg-accent text-black'
+                : 'bg-[#121826] text-subtle'
+            }`}
+          >
+            Referrals
+          </button>
+          <button
+            onClick={() => setTab('withdraws')}
+            className={`flex-1 py-2 rounded-xl ${tab === 'withdraws' ? 'bg-accent text-black' : 'bg-[#121826] text-subtle'}`}
+          >
+            Withdraws
+          </button>
+          <button
+            onClick={() => setTab('admin')}
+            className={`flex-1 py-2 rounded-xl ${tab === 'admin' ? 'bg-accent text-black' : 'bg-[#121826] text-subtle'}`}
+          >
+            Admin
+          </button>
         </div>
 
-        {/* Tab Content */}
-        {tab === 'tasks' && (
+        {tab === 'tasks' ? (
           <>
             {meLoading ? (
               <div className="space-y-3">
@@ -208,9 +186,7 @@ export default function App() {
               )}
             </section>
           </>
-        )}
-
-        {tab === 'referrals' && (
+        ) : (
           <>
             {meLoading ? (
               <div className="space-y-3">
@@ -222,28 +198,36 @@ export default function App() {
           </>
         )}
 
-        {tab === 'withdrawals' && <WithdrawHistory me={me} />}
-        {tab === 'admin' && <AdminPanel />}
+        <WithdrawModal
+          open={withdrawOpen}
+          onClose={() => setWithdrawOpen(false)}
+          onSubmit={(method, details) =>
+            withdraw.mutate({ method, details })
+          }
+          eligible={eligible}
+        />
+
+        {tab === 'withdraws' && (
+          <div className="mt-4"><WithdrawHistory /></div>
+        )}
+        {tab === 'admin' && (
+          <div className="mt-4"><AdminPanel /></div>
+        )}
+
+        <footer className="py-6 text-center text-subtle text-xs">
+          © {new Date().getFullYear()} Task-to-Earn • Not affiliated with Linkvertise
+        </footer>
       </div>
-
-      <WithdrawModal
-        open={withdrawOpen}
-        onClose={() => setWithdrawOpen(false)}
-        onSubmit={(method, details) => withdraw.mutate({ method, details })}
-        eligible={eligible}
-      />
-
-      <footer className="py-6 text-center text-subtle text-xs">
-        © {new Date().getFullYear()} Task-to-Earn • Not affiliated with
-        Linkvertise
-      </footer>
 
       <Toaster position="top-center" />
 
       {/* Loading Overlay */}
       {(meLoading || tasksLoading || refLoading) && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="h-10 w-10 rounded-full border-4 border-white/30 border-t-white animate-spin"></div>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="text-center">
+            <div className="mx-auto h-10 w-10 rounded-full border-4 border-white/30 border-t-white animate-spin" />
+            <div className="mt-3 text-white text-sm">Getting your tasks and rewards ready…</div>
+          </div>
         </div>
       )}
     </div>
