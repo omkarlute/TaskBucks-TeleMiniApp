@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import useClient from '../useClientShim'
+import useClient from '../useClient.js'
 import { toast } from 'react-hot-toast'
 
 export default function AdminPanel() {
@@ -11,6 +11,8 @@ export default function AdminPanel() {
 
   const saveSecret = () => {
     localStorage.setItem('adminSecret', secret)
+    try { client.defaults.headers['x-admin-secret'] = secret } catch(e) {}
+    qc.invalidateQueries({ queryKey: ['admin_tasks','admin_withdraws','tasks'] })
     toast.success('Admin secret saved.')
   }
 
@@ -22,6 +24,12 @@ export default function AdminPanel() {
   const createTask = useMutation({
     mutationFn: async () => (await client.post('/admin/tasks', { ...task, reward: parseFloat(task.reward) })).data,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin_tasks'] }); setTask({ title:'', link:'', reward:'', code:'' }); toast.success('Task created'); },
+    onError: (e) => toast.error(e?.response?.data?.error || 'Failed')
+  })
+
+  const seedTasks = useMutation({
+    mutationFn: async () => (await client.post('/admin/seed')).data,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tasks'] }); toast.success('Seeded tasks'); },
     onError: (e) => toast.error(e?.response?.data?.error || 'Failed')
   })
 
@@ -55,6 +63,7 @@ export default function AdminPanel() {
           <input value={task.code} onChange={e=>setTask({...task, code:e.target.value})} placeholder="Verify Code" className="bg-[#0b0f17] rounded-xl px-3 py-2 border border-[#1f2937]" />
         </div>
         <button onClick={()=>createTask.mutate()} className="mt-2 px-3 py-2 rounded-xl bg-accent text-black shadow-glow">Add Task</button>
+        <button onClick={()=>seedTasks.mutate()} className="mt-2 ml-2 px-3 py-2 rounded-xl bg-[#6b7280] text-white">Seed Tasks</button>
       </div>
 
       <div className="p-4 rounded-2xl bg-card/90 border border-white/5">

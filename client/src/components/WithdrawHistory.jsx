@@ -2,7 +2,7 @@ import React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Calendar, CheckCircle2, XCircle, Clock } from 'lucide-react'
 import { Skeleton } from './Skeleton.jsx'
-import useClient from '../useClientShim'
+import useClient from '../useClient.js'
 
 export default function WithdrawHistory() {
   const client = useClient()
@@ -14,8 +14,6 @@ export default function WithdrawHistory() {
   if (isLoading) return <div className="space-y-3"><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
 
   if (!data || data.length === 0) return <div className="text-subtle text-sm p-4 rounded-xl border border-white/5 bg-card/90">No withdrawals yet.</div>
-
-  const Icon = ({ status }) => status==='completed' ? <CheckCircle2 size={16}/> : status==='rejected' ? <XCircle size={16}/> : <Clock size={16}/>
 
   return (
     <div className="space-y-2">
