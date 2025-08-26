@@ -18,29 +18,10 @@ const app = express();
 app.use(express.json());
 app.use(helmet());
 app.use(morgan('dev'));
+app.use(cors());
 
-// ✅ Allow local dev + production via env
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true
-}));
-
-// --- MongoDB ---
-const mongoUri = process.env.MONGODB_URI || '';
-if (!mongoUri) {
-  console.warn('⚠️ MONGODB_URI is not set.');
-}
+// --- Mongo ---
+const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tasktoearn';
 mongoose.connect(mongoUri, {})
   .then(() => console.log('✅ MongoDB connected'))
   .catch(err => console.error('MongoDB error:', err));
@@ -74,28 +55,35 @@ const WithdrawalSchema = new mongoose.Schema({
   status: String,
   createdAt: Date
 });
+
 const Task = mongoose.model('Task', TaskSchema);
 const User = mongoose.model('User', UserSchema);
 const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
 
-// --- Seed Tasks ---
+// --- Seed Tasks helper ---
 async function seedTasks() {
-  const count = await Task.countDocuments();
-  if (count === 0) {
-    await Task.create([
-      { id: 't1', title: 'Visit Linkvertise Task #1', link: 'https://linkvertise.com/123/landing', reward: 0.25, code: '1212' },
-      { id: 't2', title: 'Visit Linkvertise Task #2', link: 'https://linkvertise.com/456/landing', reward: 0.3, code: '3434' },
-      { id: 't3', title: 'Partner Offer', link: 'https://example.com/offer', reward: 0.5, code: '5656' }
-    ]);
-    console.log('✅ Seeded tasks');
+  try {
+    const count = await Task.countDocuments();
+    if (count === 0) {
+      console.log('Seeding sample tasks...');
+      const samples = [
+  { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', reward: 10, code: '1111', active: true },
+  { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', reward: 5, code: '2222', active: true },
+  { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', reward: 2, code: '3333', active: true }
+];
+      await Task.insertMany(samples);
+      console.log('Seeded tasks:', samples.length);
+    }
+  } catch (e) {
+    console.error('seedTasks error', e);
   }
 }
 seedTasks().catch(console.error);
 
-// --- Telegram initData ---
+// --- Telegram init helpers ---
 function getCheckString(params) {
-  const sorted = Object.keys(params).sort();
-  return sorted.map(k => `${k}=${params[k]}`).join('\n');
+  const keys = Object.keys(params).sort();
+  return keys.filter(k => k !== 'hash').map(k => `${k}=${params[k]}`).join('\n');
 }
 function parseInitData(initData) {
   const pairs = initData.split('&');
@@ -127,15 +115,15 @@ function telegramAuth(req, res, next) {
 
   // ✅ Allow dev without initData
   if ((!initData || initData === '') && process.env.NODE_ENV !== 'production') {
-    req.tgUser = { id: "999999", first_name: "Dev", username: "localtester" };
+    req.tgUser = { id: "dev_anon", first_name: "Dev", username: "localtester" };
     return next();
   }
 
-  // Allow non-Telegram web users via x-anon-id header
+  // Allow anonymous web users via x-anon-id header
   if (!initData) {
     const anon = req.header('x-anon-id') || null;
     if (anon) {
-      req.tgUser = { id: anon, first_name: 'WebUser', username: 'web' };
+      req.tgUser = { id: anon, first_name: 'WebUser', username: `web_${anon}` };
       return next();
     }
     return res.status(401).json({ error: 'Missing Telegram init data' });
@@ -155,7 +143,7 @@ function telegramAuth(req, res, next) {
   next();
 }
 
-// --- API Routes ---
+// --- API Router ---
 const api = express.Router();
 api.use(telegramAuth);
 
@@ -168,8 +156,8 @@ api.get('/me', async (req, res) => {
       username: req.tgUser.username
     });
   }
-  // Attach referrer if provided and not already set
-  const ref = req.header('x-referrer') || null;
+  // attach referrer if provided via header or query param (only once)
+  const ref = req.header('x-referrer') || req.query.ref || null;
   if (ref && !user.referrerId && ref !== user.id) {
     const refUser = await User.findOne({ id: ref });
     if (refUser) {
@@ -194,19 +182,20 @@ api.post('/tasks/:id/verify', async (req, res) => {
   const { code } = req.body || {};
   const task = await Task.findOne({ id: taskId, active: true });
   if (!task) return res.status(404).json({ error: 'Task not found' });
-  if (!code || code.trim() !== task.code) return res.status(400).json({ error: 'Incorrect code' });
+  if (!code || String(code).trim() !== String(task.code).trim()) return res.status(400).json({ error: 'Incorrect code' });
 
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (user.completedTaskIds?.includes(task.id)) {
+  if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
     return res.status(400).json({ error: 'Task already completed' });
   }
+
   // credit user
   user.balance = (user.balance || 0) + (task.reward || 0);
   user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
   await user.save();
 
-  // referral 5% lifetime
+  // referral 5% lifetime bonus
   if (user.referrerId) {
     const refUser = await User.findOne({ id: user.referrerId });
     if (refUser) {
@@ -238,7 +227,7 @@ api.post('/withdraw', async (req, res) => {
     status: 'pending',
     createdAt: new Date()
   });
-  user.balance = 0; // simple: move all funds to pending withdrawal
+  user.balance = 0;
   await user.save();
   res.json({ ok: true, withdraw: w });
 });
@@ -255,26 +244,35 @@ api.get('/referrals', async (req, res) => {
   res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
 });
 
-// Admin routes
-api.get('/admin/tasks', async (req, res) => {
+// Admin routes (protected by x-admin-secret header matching ADMIN_SECRET env)
+function adminAuth(req, res, next) {
   if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+}
+
+api.post('/admin/seed', adminAuth, async (req, res) => {
+  await seedTasks();
+  res.json({ ok: true });
+});
+
+api.get('/admin/tasks', adminAuth, async (req, res) => {
   const tasks = await Task.find({}).sort({ active: -1 });
   res.json({ tasks });
 });
-api.post('/admin/tasks', async (req, res) => {
-  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+
+api.post('/admin/tasks', adminAuth, async (req, res) => {
   const { title, link, reward, code, active=true } = req.body || {};
   if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
   const t = await Task.create({ id: nanoid(8), title, link, reward, code, active });
   res.json({ task: t });
 });
-api.get('/admin/withdrawals', async (req, res) => {
-  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+
+api.get('/admin/withdrawals', adminAuth, async (req, res) => {
   const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
   res.json({ withdrawals });
 });
-api.post('/admin/withdrawals/:id/status', async (req, res) => {
-  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+
+api.post('/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
   const { status } = req.body || {};
   const allowed = ['pending','approved','completed','rejected'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
@@ -287,7 +285,7 @@ api.post('/admin/withdrawals/:id/status', async (req, res) => {
 
 app.use('/api', api);
 
-// --- Healthcheck (for Render) ---
+// --- Healthcheck ---
 app.get('/healthz', (_, res) => res.json({ ok: true }));
 
 // --- Serve Frontend (optional) ---
