@@ -131,7 +131,13 @@ function telegramAuth(req, res, next) {
     return next();
   }
 
+  // Allow non-Telegram web users via x-anon-id header
   if (!initData) {
+    const anon = req.header('x-anon-id') || null;
+    if (anon) {
+      req.tgUser = { id: anon, first_name: 'WebUser', username: 'web' };
+      return next();
+    }
     return res.status(401).json({ error: 'Missing Telegram init data' });
   }
 
@@ -162,6 +168,19 @@ api.get('/me', async (req, res) => {
       username: req.tgUser.username
     });
   }
+  // Attach referrer if provided and not already set
+  const ref = req.header('x-referrer') || null;
+  if (ref && !user.referrerId && ref !== user.id) {
+    const refUser = await User.findOne({ id: ref });
+    if (refUser) {
+      user.referrerId = refUser.id;
+      await user.save();
+      if (!refUser.referrals.includes(user.id)) {
+        refUser.referrals.push(user.id);
+        await refUser.save();
+      }
+    }
+  }
   res.json({ user });
 });
 
@@ -170,7 +189,101 @@ api.get('/tasks', async (req, res) => {
   res.json({ tasks });
 });
 
-// TODO: add /api/tasks/:id/verify, /api/withdraw, etc.
+api.post('/tasks/:id/verify', async (req, res) => {
+  const taskId = req.params.id;
+  const { code } = req.body || {};
+  const task = await Task.findOne({ id: taskId, active: true });
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  if (!code || code.trim() !== task.code) return res.status(400).json({ error: 'Incorrect code' });
+
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.completedTaskIds?.includes(task.id)) {
+    return res.status(400).json({ error: 'Task already completed' });
+  }
+  // credit user
+  user.balance = (user.balance || 0) + (task.reward || 0);
+  user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
+  await user.save();
+
+  // referral 5% lifetime
+  if (user.referrerId) {
+    const refUser = await User.findOne({ id: user.referrerId });
+    if (refUser) {
+      const bonus = (task.reward || 0) * 0.05;
+      refUser.balance = (refUser.balance || 0) + bonus;
+      refUser.referralEarnings = (refUser.referralEarnings || 0) + bonus;
+      if (!refUser.referrals.includes(user.id)) refUser.referrals.push(user.id);
+      await refUser.save();
+    }
+  }
+
+  res.json({ ok: true });
+});
+
+api.post('/withdraw', async (req, res) => {
+  const { method, details } = req.body || {};
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const amount = Math.floor((user.balance || 0) * 100) / 100;
+  if (!amount || amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
+
+  const w = await Withdrawal.create({
+    id: nanoid(12),
+    userId: user.id,
+    method: (method||'').toLowerCase(),
+    details: details || {},
+    amount,
+    status: 'pending',
+    createdAt: new Date()
+  });
+  user.balance = 0; // simple: move all funds to pending withdrawal
+  await user.save();
+  res.json({ ok: true, withdraw: w });
+});
+
+api.get('/withdraws', async (req, res) => {
+  const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
+  res.json({ withdraws: list });
+});
+
+api.get('/referrals', async (req, res) => {
+  const user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const refs = await User.find({ referrerId: user.id }).select('id first_name username');
+  res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
+});
+
+// Admin routes
+api.get('/admin/tasks', async (req, res) => {
+  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+  const tasks = await Task.find({}).sort({ active: -1 });
+  res.json({ tasks });
+});
+api.post('/admin/tasks', async (req, res) => {
+  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+  const { title, link, reward, code, active=true } = req.body || {};
+  if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
+  const t = await Task.create({ id: nanoid(8), title, link, reward, code, active });
+  res.json({ task: t });
+});
+api.get('/admin/withdrawals', async (req, res) => {
+  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+  const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
+  res.json({ withdrawals });
+});
+api.post('/admin/withdrawals/:id/status', async (req, res) => {
+  if ((req.header('x-admin-secret')||'') !== (process.env.ADMIN_SECRET||'')) return res.status(401).json({ error: 'Unauthorized' });
+  const { status } = req.body || {};
+  const allowed = ['pending','approved','completed','rejected'];
+  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  const w = await Withdrawal.findOne({ id: req.params.id });
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  w.status = status;
+  await w.save();
+  res.json({ ok: true, withdrawal: w });
+});
 
 app.use('/api', api);
 
