@@ -70,10 +70,10 @@ async function seedTasks() {
     if (count === 0) {
       console.log('Seeding sample tasks...');
       const samples = [
-  { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', reward: 10, code: '1111', active: true },
-  { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', reward: 5, code: '2222', active: true },
-  { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', reward: 2, code: '3333', active: true }
-];
+        { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', reward: 10, code: '1111', active: true },
+        { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', reward: 5, code: '2222', active: true },
+        { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', reward: 2, code: '3333', active: true }
+      ];
       await Task.insertMany(samples);
       console.log('Seeded tasks:', samples.length);
     }
@@ -146,13 +146,24 @@ function telegramAuth(req, res, next) {
   next();
 }
 
-// --- API Router ---
-const api = express.Router();
-api.use(telegramAuth);
+// Admin auth middleware
+function adminAuth(req, res, next) {
+  try {
+    const token = req.cookies?.admin_token || '';
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    const payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret');
+    if (payload?.role !== 'admin') return res.status(401).json({ error: 'Unauthorized' });
+    req.admin = { username: payload.username };
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
 
+// --- API Routes (Apply directly to app) ---
 
 // Admin auth endpoints
-api.post('/admin/login', async (req, res) => {
+app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body || {};
   const u = process.env.ADMIN_USERNAME || 'admin';
   const p = process.env.ADMIN_PASSWORD || 'password';
@@ -163,11 +174,13 @@ api.post('/admin/login', async (req, res) => {
   return res.json({ ok: true });
 });
 
-api.post('/admin/logout', (req, res) => {
+app.post('/api/admin/logout', (req, res) => {
   res.clearCookie('admin_token');
   res.json({ ok: true });
 });
-api.get('/me', async (req, res) => {
+
+// User endpoints (with telegram auth)
+app.get('/api/me', telegramAuth, async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
     user = await User.create({
@@ -192,12 +205,12 @@ api.get('/me', async (req, res) => {
   res.json({ user });
 });
 
-api.get('/tasks', async (req, res) => {
+app.get('/api/tasks', telegramAuth, async (req, res) => {
   const tasks = await Task.find({ active: true });
   res.json({ tasks });
 });
 
-api.post('/tasks/:id/verify', async (req, res) => {
+app.post('/api/tasks/:id/verify', telegramAuth, async (req, res) => {
   const taskId = req.params.id;
   const { code } = req.body || {};
   const task = await Task.findOne({ id: taskId, active: true });
@@ -230,7 +243,7 @@ api.post('/tasks/:id/verify', async (req, res) => {
   res.json({ ok: true });
 });
 
-api.post('/withdraw', async (req, res) => {
+app.post('/api/withdraw', telegramAuth, async (req, res) => {
   const { method, details } = req.body || {};
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -252,55 +265,42 @@ api.post('/withdraw', async (req, res) => {
   res.json({ ok: true, withdraw: w });
 });
 
-api.get('/withdraws', async (req, res) => {
+app.get('/api/withdraws', telegramAuth, async (req, res) => {
   const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
   res.json({ withdraws: list });
 });
 
-api.get('/referrals', async (req, res) => {
+app.get('/api/referrals', telegramAuth, async (req, res) => {
   const user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
   const refs = await User.find({ referrerId: user.id }).select('id first_name username');
   res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
 });
 
-// Admin routes (JWT cookie-based auth)
-function adminAuth(req, res, next) {
-  try {
-    const token = req.cookies?.admin_token || '';
-    if (!token) return res.status(401).json({ error: 'Unauthorized' });
-    const payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret');
-    if (payload?.role !== 'admin') return res.status(401).json({ error: 'Unauthorized' });
-    req.admin = { username: payload.username };
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-}
-
-api.post('/admin/seed', adminAuth, async (req, res) => {
+// Admin routes
+app.post('/api/admin/seed', adminAuth, async (req, res) => {
   await seedTasks();
   res.json({ ok: true });
 });
 
-api.get('/admin/tasks', adminAuth, async (req, res) => {
+app.get('/api/admin/tasks', adminAuth, async (req, res) => {
   const tasks = await Task.find({}).sort({ active: -1 });
   res.json({ tasks });
 });
 
-api.post('/admin/tasks', adminAuth, async (req, res) => {
+app.post('/api/admin/tasks', adminAuth, async (req, res) => {
   const { title, link, reward, code, active=true } = req.body || {};
   if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
   const t = await Task.create({ id: nanoid(8), title, link, reward, code, active });
   res.json({ task: t });
 });
 
-api.get('/admin/withdrawals', adminAuth, async (req, res) => {
+app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
   const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
   res.json({ withdrawals });
 });
 
-api.post('/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
+app.post('/api/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
   const { status } = req.body || {};
   const allowed = ['pending','approved','completed','rejected'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
@@ -310,8 +310,6 @@ api.post('/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
   await w.save();
   res.json({ ok: true, withdrawal: w });
 });
-
-app.use('/api', api);
 
 // --- Healthcheck ---
 app.get('/healthz', (_, res) => res.json({ ok: true }));
@@ -328,4 +326,3 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
-
