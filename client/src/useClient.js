@@ -13,14 +13,13 @@ export default function useClient() {
     anonId = 'web_' + Math.random().toString(36).slice(2, 10)
     localStorage.setItem('anonId', anonId)
   }
-  const adminSecret = localStorage.getItem('adminSecret') || ''
+    const adminSecret = ''
 
   const headers = {
     'x-telegram-init-data': (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || ''
   }
   if (anonId) headers['x-anon-id'] = anonId
-  if (adminSecret) headers['x-admin-secret'] = adminSecret
-  if (ref) headers['x-referrer'] = ref
+    if (ref) headers['x-referrer'] = ref
 
-  return axios.create({ baseURL: API_BASE, headers })
+  return axios.create({ baseURL: API_BASE, headers, withCredentials: true })
 }
