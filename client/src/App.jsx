@@ -24,7 +24,10 @@ export default function App() {
       WebApp.expand()
       WebApp.setHeaderColor('secondary_bg_color')
       WebApp.setBackgroundColor('#070b11')
-    } catch {}
+    } catch (e) {
+      // ignore if not running in Telegram environment
+      // console.warn('Telegram WebApp init failed', e)
+    }
   }, [])
 
   const { data: me, isLoading: meLoading } = useQuery({
@@ -55,37 +58,25 @@ export default function App() {
     }
   })
 
-  const balance = useMemo(() => me?.user?.balance || 0, [me])
-  
+  const balance = useMemo(() => Number(me?.user?.balance || 0), [me])
+
   // Filter tasks based on hideCompleted toggle
   const tasks = useMemo(() => {
     if (!tasksData?.tasks) return []
-    
+
+    const list = Array.isArray(tasksData.tasks) ? tasksData.tasks.slice() : []
+
     if (hideCompleted) {
-      return tasksData.tasks.filter(task => task.status !== 'completed')
+      return list.filter(task => task.status !== 'completed')
     }
-    
-    // Sort completed tasks to the bottom
-    return tasksData.tasks.sort((a, b) => {
+
+    // Sort completed tasks to the bottom without mutating original
+    return list.sort((a, b) => {
       if (a.status === 'completed' && b.status !== 'completed') return 1
       if (a.status !== 'completed' && b.status === 'completed') return -1
       return 0
     })
   }, [tasksData, hideCompleted])
-
-  function openBotChat() {
-    const url = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}` : null
-    if (!url) return
-    try {
-      if (window.Telegram?.WebApp) {
-        WebApp.openTelegramLink(url)
-      } else {
-        window.open(url, '_blank', 'noopener')
-      }
-    } catch {
-      window.open(url, '_blank', 'noopener')
-    }
-  }
 
   return (
     <div className="min-h-screen max-w-md mx-auto pb-28">
@@ -98,11 +89,18 @@ export default function App() {
               <div className="font-semibold">{me?.user?.first_name || me?.user?.username || 'Guest'}</div>
             </div>
           </div>
-          <button onClick={openBotChat} className="px-3 py-2 rounded-xl bg-white text-black text-sm">Open Bot</button>
         </div>
 
         {/* Tabs */}
         <div className="max-w-md mx-auto px-2 pb-2">
+          <div className="bg-gradient-to-r from-cyan-500 to-blue-500 text-white p-3 rounded-2xl mb-3 flex items-center justify-between">
+            <div>
+              <div className="font-semibold">Invite friends — Earn more</div>
+              <div className="text-sm opacity-90">Share your referral link and get lifetime bonuses when they complete tasks.</div>
+            </div>
+            <button onClick={() => setTab('referrals')} className="px-3 py-2 bg-white text-black rounded-xl">Refer</button>
+          </div>
+
           <div className="grid grid-cols-3 gap-2 p-1 rounded-2xl bg-white/5">
             {['tasks','referrals','wallet'].map(t => (
               <button
