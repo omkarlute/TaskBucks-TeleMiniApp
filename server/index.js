@@ -147,7 +147,7 @@ function verifyTelegramInitData(initData, botToken) {
 }
 
 // --- API Auth Middleware ---
-function telegramAuth(req, res, next) {
+async function telegramAuth(req, res, next) {
   const initData = req.header('x-telegram-init-data') || req.query.initData;
 
   // ✅ Allow dev without initData
@@ -173,10 +173,49 @@ function telegramAuth(req, res, next) {
 
   const parsed = parseInitData(initData);
   try {
-    req.tgUser = JSON.parse(parsed.user || '{}');
+    const parsedUser = JSON.parse(parsed.user || '{}');
+    req.tgUser = parsedUser;
   } catch {
     req.tgUser = null;
   }
+
+  // If user was previously browsing the web (anon) and then opens via Telegram,
+  // merge the anonymous web profile with the Telegram profile to avoid duplicate accounts.
+  try {
+    const anonId = req.header('x-anon-id') || null;
+    if (anonId && req.tgUser && anonId !== req.tgUser.id) {
+      const anonUser = await User.findOne({ id: anonId });
+      const tgUser = await User.findOne({ id: req.tgUser.id });
+
+      if (anonUser) {
+        if (tgUser) {
+          // Merge anonUser into tgUser
+          tgUser.balance = (tgUser.balance || 0) + (anonUser.balance || 0);
+          tgUser.completedTaskIds = Array.from(new Set([...(tgUser.completedTaskIds||[]), ...(anonUser.completedTaskIds||[])]));
+          tgUser.referrals = Array.from(new Set([...(tgUser.referrals||[]), ...(anonUser.referrals||[])]));
+          tgUser.referralEarnings = (tgUser.referralEarnings || 0) + (anonUser.referralEarnings || 0);
+
+          // transfer any referrer links pointing to anonUser
+          await tgUser.save();
+
+          // Update other users who had anonUser as referrer (rare) to point to tgUser
+          await User.updateMany({ referrerId: anonUser.id }, { $set: { referrerId: tgUser.id } });
+
+          // Delete anon user after merge
+          await User.deleteOne({ id: anonUser.id });
+        } else {
+          // If Telegram user document doesn't exist, adopt the anonUser record for Telegram id
+          anonUser.id = req.tgUser.id;
+          anonUser.first_name = req.tgUser.first_name || anonUser.first_name;
+          anonUser.username = req.tgUser.username || anonUser.username;
+          await anonUser.save();
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Error merging anon user with telegram user', e);
+  }
+
   next();
 }
 
@@ -311,19 +350,30 @@ const withdrawHandler = async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const amount = Math.floor((user.balance || 0) * 100) / 100;
-  if (!amount || amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
+  // requested amount must be provided
+  let requested = req.body?.amount;
+  if (typeof requested === 'string') requested = parseFloat(requested);
+  if (typeof requested !== 'number' || isNaN(requested)) return res.status(400).json({ error: 'Invalid amount' });
+
+  // round to 2 decimals
+  const amount = Math.floor(requested * 100) / 100;
+
+  if (amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+  if (amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
+  if ((user.balance || 0) < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
   const w = await Withdrawal.create({
     id: nanoid(12),
     userId: user.id,
-    method: (method||'').toLowerCase(),
-    details: details || {},
+    method: method || 'manual',
+    details: details || { address: req.body?.address || '' },
     amount,
     status: 'pending',
     createdAt: new Date()
   });
-  user.balance = 0;
+
+  // deduct requested amount from user's balance
+  user.balance = Math.floor(((user.balance || 0) - amount) * 100) / 100;
   await user.save();
   res.json({ ok: true, withdraw: w });
 };
@@ -337,7 +387,17 @@ const referralsHandler = async (req, res) => {
   const user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
   const refs = await User.find({ referrerId: user.id }).select('id first_name username');
-  res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
+  const botUsername = process.env.TELEGRAM_BOT_USERNAME || process.env.VITE_BOT_USERNAME || 'Taskbucksbot';
+  const botLink = `https://t.me/${botUsername}?start=${user.id}`;
+  const webLink = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}/?ref=${user.id}`;
+  res.json({
+    link: botLink,
+    webLink,
+    referrals: refs,
+    count: (refs || []).length,
+    referralEarnings: user.referralEarnings || 0,
+    earnings: user.referralEarnings || 0
+  });
 };
 
 // Apply routes to both /api and direct paths
@@ -373,7 +433,18 @@ app.get('/api/admin/tasks', adminAuth, async (req, res) => {
 app.post('/api/admin/tasks', adminAuth, async (req, res) => {
   const { title, link, reward, code, description, active=true } = req.body || {};
   if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
-
+  
+  const t = await Task.create({ 
+    id: nanoid(8), 
+    title, 
+    link, 
+    description: description || '', 
+    reward, 
+    code, 
+    active 
+  });
+  res.json({ task: t });
+});
 
 app.put('/api/admin/tasks/:id', adminAuth, async (req, res) => {
   const { title, link, reward, code, description, active } = req.body || {};
@@ -397,18 +468,6 @@ app.delete('/api/admin/tasks/:id', adminAuth, async (req, res) => {
   const t = await Task.findOneAndDelete({ id: req.params.id });
   if (!t) return res.status(404).json({ error: 'Not found' });
   res.json({ ok: true });
-});
-
-  const t = await Task.create({ 
-    id: nanoid(8), 
-    title, 
-    link, 
-    description: description || '', 
-    reward, 
-    code, 
-    active 
-  });
-  res.json({ task: t });
 });
 
 app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
