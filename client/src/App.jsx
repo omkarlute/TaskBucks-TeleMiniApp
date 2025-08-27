@@ -1,235 +1,165 @@
+
 import React, { useEffect, useMemo, useState } from 'react'
 import WebApp from '@twa-dev/sdk'
-import axios from 'axios'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Toaster, toast } from 'react-hot-toast'
-
-import Header from './components/Header.jsx'
-import BalanceCard from './components/BalanceCard.jsx'
-import TaskCard from './components/TaskCard.jsx'
-import WithdrawModal from './components/WithdrawModal.jsx'
-import ReferralCard from './components/ReferralCard.jsx'
-import ReferralView from './components/ReferralView.jsx'
-import { Skeleton } from './components/Skeleton.jsx'
 import useClient from './useClient.js'
+import TaskCard from './components/TaskCard.jsx'
+import ReferralCard from './components/ReferralCard.jsx'
+import WithdrawModal from './components/WithdrawModal.jsx'
 import WithdrawHistory from './components/WithdrawHistory.jsx'
-import AdminPanel from './components/AdminPanel.jsx'
 
-const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+const BOT_USERNAME = import.meta.env.VITE_BOT_USERNAME || ''
 
-
-function useMe() {
-  const client = useClient()
-  return useQuery({
-    queryKey: ['me'],
-    queryFn: async () => (await client.get('/me')).data.user
-  })
-}
-
-function useReferrals() {
-  const client = useClient()
-  return useQuery({
-    queryKey: ['referrals'],
-    queryFn: async () => (await client.get('/referrals')).data
-  })
-}
-
-function useTasks() {
-  const client = useClient()
-  return useQuery({
-    queryKey: ['tasks'],
-    queryFn: async () => (await client.get('/tasks')).data.tasks
-  })
-}
 export default function App() {
-  const [withdrawOpen, setWithdrawOpen] = useState(false)
-  const client = useClient()
+  const api = useClient()
   const qc = useQueryClient()
   const [tab, setTab] = useState('tasks')
+  const [withdrawOpen, setWithdrawOpen] = useState(false)
+  const [hideCompleted, setHideCompleted] = useState(false)
 
-  const { data: me, isLoading: meLoading } = useMe()
-  const { data: tasks, isLoading: tasksLoading } = useTasks()
-  const { data: referral, isLoading: refLoading } = useReferrals()
-
-  
-  const startTask = useMutation({
-    mutationFn: async (id) => (await client.post(`/tasks/${id}/start`)).data,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tasks'] })
-    },
-    onError: (err) => {
-      // ignore start errors (idempotent)
-    }
-  });
-const verifyTask = useMutation({
-    mutationFn: async ({ id, code }) =>
-     (await client.post(`/tasks/${id}/verify`, { code })).data,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['me'] })
-      qc.invalidateQueries({ queryKey: ['tasks'] })
-      toast.success('Task verified! Reward added.')
-    },
-    onError: (err) => {
-      const msg = err?.response?.data?.error || 'Incorrect code'
-      toast.error(msg)
-    }
-  })
-
-  const withdraw = useMutation({
-    mutationFn: async ({ method, details }) =>
-    (await client.post('/withdraw', { method, details })).data,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['me'] })
-      setWithdrawOpen(false)
-      toast.success('Withdrawal requested! Processing soon.')
-    },
-    onError: (err) => {
-      const msg = err?.response?.data?.error || 'Error'
-      toast.error(msg)
-    }
-  })
-
+  // Initialize Telegram theme + viewport
   useEffect(() => {
     try {
       WebApp.ready()
       WebApp.expand()
+      WebApp.setHeaderColor('secondary_bg_color')
+      WebApp.setBackgroundColor('#070b11')
     } catch {}
   }, [])
 
-  const balance = me?.balance || 0
-  const eligible = balance >= 5
+  const { data: me, isLoading: meLoading } = useQuery({
+    queryKey: ['me'],
+    queryFn: async () => (await api.get('/me')).data
+  })
+
+  const { data: tasks, isLoading: tasksLoading } = useQuery({
+    queryKey: ['tasks', { hideCompleted }],
+    queryFn: async () => (await api.get('/tasks', { params: { mode: hideCompleted ? 'hide' : 'show' } })).data
+  })
+
+  const { data: refs, isLoading: refLoading } = useQuery({
+    queryKey: ['referrals'],
+    queryFn: async () => (await api.get('/referrals')).data
+  })
+
+  const verify = useMutation({
+    mutationFn: async ({ id, code }) => (await api.post(`/tasks/${id}/verify`, { code })).data,
+    onSuccess: (data) => {
+      toast.success('Task completed! Reward added.')
+      qc.invalidateQueries({ queryKey: ['me'] })
+      qc.invalidateQueries({ queryKey: ['tasks'] })
+      qc.invalidateQueries({ queryKey: ['referrals'] })
+    },
+    onError: (err) => {
+      toast.error(err?.response?.data?.error || 'Verification failed')
+    }
+  })
+
+  const balance = useMemo(() => me?.balance || 0, [me])
+
+  function openBotChat() {
+    const url = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}` : null
+    if (!url) return
+    try {
+      if (window.Telegram?.WebApp) {
+        WebApp.openTelegramLink(url)
+      } else {
+        window.open(url, '_blank', 'noopener')
+      }
+    } catch {
+      window.open(url, '_blank', 'noopener')
+    }
+  }
 
   return (
-    <div className="min-h-[100dvh]">
-      <div className="fixed inset-0 -z-10">
-        <div className="absolute inset-0 bg-gradient-to-b from-[#0b0f17] to-[#0b0f17]" />
-        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[600px] h-[600px] rounded-full bg-accent/10 blur-[120px]" />
-      </div>
-
-      <div className="max-w-xl mx-auto p-4 space-y-4">
-        <Header />
+    <div className="min-h-screen max-w-md mx-auto pb-28">
+      <header className="sticky top-0 z-40 backdrop-blur bg-[#070b11]/70 border-b border-white/5">
+        <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-white text-black grid place-items-center font-bold">T</div>
+            <div>
+              <div className="text-sm text-muted">Welcome</div>
+              <div className="font-semibold">{me?.firstName || me?.username || 'Guest'}</div>
+            </div>
+          </div>
+          <button onClick={openBotChat} className="px-3 py-2 rounded-xl bg-white text-black text-sm">Open Bot</button>
+        </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 mt-1">
-          <button
-            onClick={() => setTab('tasks')}
-            className={`flex-1 py-2 rounded-xl ${
-              tab === 'tasks'
-                ? 'bg-accent text-black'
-                : 'bg-[#121826] text-subtle'
-            }`}
-          >
-            Tasks
-          </button>
-          <button
-            onClick={() => setTab('referrals')}
-            className={`flex-1 py-2 rounded-xl ${
-              tab === 'referrals'
-                ? 'bg-accent text-black'
-                : 'bg-[#121826] text-subtle'
-            }`}
-          >
-            Referrals
-          </button>
-          <button
-            onClick={() => setTab('withdraws')}
-            className={`flex-1 py-2 rounded-xl ${tab === 'withdraws' ? 'bg-accent text-black' : 'bg-[#121826] text-subtle'}`}
-          >
-            Withdraws
-          </button>
-          <button
-            onClick={() => setTab('admin')}
-            className={`flex-1 py-2 rounded-xl ${tab === 'admin' ? 'bg-accent text-black' : 'bg-[#121826] text-subtle'}`}
-          >
-            Admin
-          </button>
-        </div>
-
-        {tab === 'tasks' ? (
-          <>
-            {meLoading ? (
-              <div className="space-y-3">
-                <Skeleton className="h-28 rounded-2xl" />
-              </div>
-            ) : (
-              <>
-                <BalanceCard
-                  balance={balance}
-                  onWithdrawClick={() => setWithdrawOpen(true)}
-                />
-                <div className="mt-3" />
-                <ReferralCard me={me} referral={referral} />
-              </>
-            )}
-
-            <section className="space-y-2 mt-4">
-              <h2 className="text-lg font-semibold">Tasks</h2>
-              {tasksLoading ? (
-                <div className="space-y-2">
-                  <Skeleton className="h-28 rounded-2xl" />
-                  <Skeleton className="h-28 rounded-2xl" />
-                  <Skeleton className="h-28 rounded-2xl" />
-                </div>
-              ) : tasks?.length ? (
-                tasks.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    task={t}
-                    onVerify={(id, code) => verifyTask.mutate({ id, code })}
-                    loading={verifyTask.isPending}
-                  />
-                ))
-              ) : (
-                <div className="p-4 rounded-2xl bg-card/90 border border-white/5">
-                  No tasks available
-                </div>
-              )}
-            </section>
-          </>
-        ) : (
-          <>
-            {meLoading ? (
-              <div className="space-y-3">
-                <Skeleton className="h-28 rounded-2xl" />
-              </div>
-            ) : (
-              <ReferralView me={me} referral={referral} />
-            )}
-          </>
-        )}
-
-        <WithdrawModal
-          open={withdrawOpen}
-          onClose={() => setWithdrawOpen(false)}
-          onSubmit={(method, details) =>
-            withdraw.mutate({ method, details })
-          }
-          eligible={eligible}
-        />
-
-        {tab === 'withdraws' && (
-          <div className="mt-4"><WithdrawHistory /></div>
-        )}
-        {tab === 'admin' && (
-          <div className="mt-4"><AdminPanel /></div>
-        )}
-
-        <footer className="py-6 text-center text-subtle text-xs">
-          © {new Date().getFullYear()} Task-to-Earn • Not affiliated with Linkvertise
-        </footer>
-      </div>
-
-      <Toaster position="top-center" />
-
-      {/* Loading Overlay */}
-      {(meLoading || tasksLoading || refLoading) && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="text-center">
-            <div className="mx-auto h-10 w-10 rounded-full border-4 border-white/30 border-t-white animate-spin" />
-            <div className="mt-3 text-white text-sm">Getting your tasks and rewards ready…</div>
+        <div className="max-w-md mx-auto px-2 pb-2">
+          <div className="grid grid-cols-3 gap-2 p-1 rounded-2xl bg-white/5">
+            {['tasks','referrals','wallet'].map(t => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`py-2 rounded-xl text-sm ${tab===t ? 'bg-white text-black' : 'text-white/70'}`}
+              >
+                {t==='tasks' ? 'Tasks' : t==='referrals' ? 'Referrals' : 'Wallet'}
+              </button>
+            ))}
           </div>
         </div>
-      )}
+      </header>
+
+      <main className="max-w-md mx-auto px-4 pt-4">
+        {/* Balance card + reminder pill */}
+        <div className="bg-card border border-white/5 rounded-2xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-muted text-sm">Available Balance</div>
+              <div className="text-3xl font-semibold">{balance.toFixed(2)}</div>
+            </div>
+            <button
+              onClick={() => setWithdrawOpen(true)}
+              className="px-4 py-2 rounded-xl bg-[rgb(var(--accent))] text-black shadow-glow text-sm"
+            >Withdraw</button>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <span className="badge badge-gold">New tasks every 24h</span>
+            <span className="text-xs text-muted">Completed tasks move below (toggle to hide).</span>
+          </div>
+        </div>
+
+        {tab === 'tasks' && (
+          <>
+            <div className="mt-4 flex items-center justify-between">
+              <div className="text-sm text-muted">Complete tasks to earn rewards.</div>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={hideCompleted} onChange={e => setHideCompleted(e.target.checked)} />
+                Hide completed
+              </label>
+            </div>
+
+            <div className="mt-3 space-y-3">
+              {tasksLoading ? (
+                <div className="h-28 bg-surface rounded-2xl border border-white/5 animate-pulse" />
+              ) : (
+                tasks?.length ? tasks.map(t => (
+                  <TaskCard key={t.id} task={t} onVerify={(id, code) => verify.mutate({ id, code })} />
+                )) : (
+                  <div className="text-center text-muted py-8">No tasks right now. Check back later!</div>
+                )
+              )}
+            </div>
+          </>
+        )}
+
+        {tab === 'referrals' && (
+          <div className="mt-4">
+            <ReferralCard data={refs} loading={refLoading} />
+          </div>
+        )}
+
+        {tab === 'wallet' && (
+          <div className="mt-4">
+            <WithdrawHistory />
+          </div>
+        )}
+      </main>
+
+      <Toaster position="top-center" />
+      {withdrawOpen && <WithdrawModal onClose={() => setWithdrawOpen(false)} />}
     </div>
   )
 }
