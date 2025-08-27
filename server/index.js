@@ -154,8 +154,7 @@ async function telegramAuth(req, res, next) {
     req.tgStartParam = null;
   }
 
-  // If user was previously browsing the web (anon) and then opens via Telegram,
-  // merge the anonymous web profile with the Telegram profile to avoid duplicate accounts.
+  // Merge anon <-> telegram user (avoid duplicates)
   try {
     const anonId = req.header('x-anon-id') || null;
     if (anonId && req.tgUser && anonId !== req.tgUser.id) {
@@ -164,22 +163,14 @@ async function telegramAuth(req, res, next) {
 
       if (anonUser) {
         if (tgUser) {
-          // Merge anonUser into tgUser
           tgUser.balance = (tgUser.balance || 0) + (anonUser.balance || 0);
           tgUser.completedTaskIds = Array.from(new Set([...(tgUser.completedTaskIds||[]), ...(anonUser.completedTaskIds||[])]));
           tgUser.referrals = Array.from(new Set([...(tgUser.referrals||[]), ...(anonUser.referrals||[])]));
           tgUser.referralEarnings = (tgUser.referralEarnings || 0) + (anonUser.referralEarnings || 0);
-
-          // transfer any referrer links pointing to anonUser
           await tgUser.save();
-
-          // Update other users who had anonUser as referrer (rare) to point to tgUser
           await User.updateMany({ referrerId: anonUser.id }, { $set: { referrerId: tgUser.id } });
-
-          // Delete anon user after merge
           await User.deleteOne({ id: anonUser.id });
         } else {
-          // If Telegram user document doesn't exist, adopt the anonUser record for Telegram id
           anonUser.id = req.tgUser.id;
           anonUser.first_name = req.tgUser.first_name || anonUser.first_name;
           anonUser.username = req.tgUser.username || anonUser.username;
@@ -208,28 +199,7 @@ function adminAuth(req, res, next) {
   }
 }
 
-// --- API Routes (Apply directly to app) ---
-
-// Admin auth endpoints
-app.post('/api/admin/login', async (req, res) => {
-  const { username, password } = req.body || {};
-  const u = process.env.ADMIN_USERNAME || 'admin';
-  const p = process.env.ADMIN_PASSWORD || 'password';
-  if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
-  if (username !== u || password !== p) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = jwt.sign({ role: 'admin', username }, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret', { expiresIn: '7d' });
-  const cookieOpts = { httpOnly: true, sameSite: (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax')), secure: (process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production'), maxAge: 7*24*60*60*1000 };
-  res.cookie('admin_token', token, cookieOpts);
-  return res.json({ ok: true });
-});
-
-app.post('/api/admin/logout', (req, res) => {
-  const cookieOpts = { httpOnly: true, sameSite: (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax')), secure: (process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production') };
-  res.clearCookie('admin_token', cookieOpts);
-  res.json({ ok: true });
-});
-
-// User endpoints (with telegram auth)
+// --- API Routes ---
 const meHandler = async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
@@ -239,7 +209,6 @@ const meHandler = async (req, res) => {
       username: req.tgUser.username
     });
   }
-  // attach referrer if provided via header or query param (only once)
   const ref = req.header('x-referrer') || req.query.ref || req.tgStartParam || null;
   if (ref && !user.referrerId && ref !== user.id) {
     const refUser = await User.findOne({ id: ref });
@@ -256,8 +225,6 @@ const meHandler = async (req, res) => {
 };
 
 const tasksHandler = async (req, res) => {
-  console.log('📋 GET /tasks called');
-
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
     user = await User.create({
@@ -266,9 +233,7 @@ const tasksHandler = async (req, res) => {
       username: req.tgUser.username
     });
   }
-
   const tasks = await Task.find({ active: true });
-
   const transformedTasks = tasks.map(task => ({
     id: task.id,
     title: task.title,
@@ -279,7 +244,6 @@ const tasksHandler = async (req, res) => {
     active: task.active,
     status: (user.completedTaskIds || []).includes(task.id) ? 'completed' : 'pending'
   }));
-
   res.json({ tasks: transformedTasks });
 };
 
@@ -296,12 +260,10 @@ const taskVerifyHandler = async (req, res) => {
     return res.status(400).json({ error: 'Task already completed' });
   }
 
-  // credit user
   user.balance = (user.balance || 0) + (task.reward || 0);
   user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
   await user.save();
 
-  // referral 5% lifetime bonus
   if (user.referrerId) {
     const refUser = await User.findOne({ id: user.referrerId });
     if (refUser) {
@@ -322,14 +284,11 @@ const withdrawHandler = async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  // requested amount must be provided
   let requested = req.body?.amount;
   if (typeof requested === 'string') requested = parseFloat(requested);
   if (typeof requested !== 'number' || isNaN(requested)) return res.status(400).json({ error: 'Invalid amount' });
 
-  // round to 2 decimals
   const amount = Math.floor(requested * 100) / 100;
-
   if (amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
   if (amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
   if ((user.balance || 0) < amount) return res.status(400).json({ error: 'Insufficient balance' });
@@ -344,7 +303,6 @@ const withdrawHandler = async (req, res) => {
     createdAt: new Date()
   });
 
-  // deduct requested amount from user's balance
   user.balance = Math.floor(((user.balance || 0) - amount) * 100) / 100;
   await user.save();
   res.json({ ok: true, withdraw: w });
@@ -372,52 +330,35 @@ const referralsHandler = async (req, res) => {
   });
 };
 
-// Apply routes to both /api and direct paths
+// Apply routes
 app.get('/api/me', telegramAuth, meHandler);
 app.get('/me', telegramAuth, meHandler);
-
 app.get('/api/tasks', telegramAuth, tasksHandler);
 app.get('/tasks', telegramAuth, tasksHandler);
-
 app.post('/api/tasks/:id/verify', telegramAuth, taskVerifyHandler);
 app.post('/tasks/:id/verify', telegramAuth, taskVerifyHandler);
-
 app.post('/api/withdraw', telegramAuth, withdrawHandler);
 app.post('/withdraw', telegramAuth, withdrawHandler);
-
 app.get('/api/withdraws', telegramAuth, withdrawsHandler);
 app.get('/withdraws', telegramAuth, withdrawsHandler);
-
 app.get('/api/referrals', telegramAuth, referralsHandler);
 app.get('/referrals', telegramAuth, referralsHandler);
 
-// Admin routes
+// --- Admin routes ---
 app.post('/api/admin/seed', adminAuth, async (req, res) => {
   await seedTasks();
   res.json({ ok: true });
 });
-
 app.get('/api/admin/tasks', adminAuth, async (req, res) => {
   const tasks = await Task.find({}).sort({ active: -1 });
   res.json({ tasks });
 });
-
 app.post('/api/admin/tasks', adminAuth, async (req, res) => {
   const { title, link, reward, code, description, active=true } = req.body || {};
   if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
-
-  const t = await Task.create({
-    id: nanoid(8),
-    title,
-    link,
-    description: description || '',
-    reward,
-    code,
-    active
-  });
+  const t = await Task.create({ id: nanoid(8), title, link, description: description || '', reward, code, active });
   res.json({ task: t });
 });
-
 app.put('/api/admin/tasks/:id', adminAuth, async (req, res) => {
   const { title, link, reward, code, description, active } = req.body || {};
   const t = await Task.findOne({ id: req.params.id });
@@ -435,18 +376,15 @@ app.put('/api/admin/tasks/:id', adminAuth, async (req, res) => {
   await t.save();
   res.json({ task: t });
 });
-
 app.delete('/api/admin/tasks/:id', adminAuth, async (req, res) => {
   const t = await Task.findOneAndDelete({ id: req.params.id });
   if (!t) return res.status(404).json({ error: 'Not found' });
   res.json({ ok: true });
 });
-
 app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
   const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
   res.json({ withdrawals });
 });
-
 app.post('/api/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
   const { status } = req.body || {};
   const allowed = ['pending','approved','completed','rejected'];
@@ -461,52 +399,7 @@ app.post('/api/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
 // --- Healthcheck ---
 app.get('/healthz', (_, res) => res.json({ ok: true }));
 
-// Support /start and /start/* paths that Telegram may open from the chat bar
-app.get(['/start','/start/*'], (req, res) => {
-  if (process.env.SERVE_CLIENT === 'true') {
-    const dist = path.join(__dirname, '..', 'client', 'dist');
-    return res.sendFile(path.join(dist, 'index.html'));
-  }
-  const q = req.url.includes('?') ? req.url.split('?',1)[1] : '';
-  const qs = q ? ('?' + q) : '';
-  return res.redirect('/' + qs);
-});
-
-
-// --- Universal /start redirect (fixes 'Not Found' when Telegram opens /start) ---
-app.get(['/start', '/start/*'], (req, res) => {
-  try {
-    // Preserve any query string (e.g., tgWebAppStartParam)
-    const q = req.originalUrl.includes('?') ? req.originalUrl.substring(req.originalUrl.indexOf('?')) : '';
-    if (process.env.SERVE_CLIENT === 'true') {
-      // If we serve the client here, just send index.html at '/'
-      return res.redirect(302, '/' + (q || ''));
-    }
-    // Otherwise, redirect to external client host if provided
-    const client = process.env.CLIENT_URL;
-    if (client) {
-      const base = client.endsWith('/') ? client : client + '/';
-      return res.redirect(302, base + (q || ''));
-    }
-    // Fallback to root on this same server
-    return res.redirect(302, '/' + (q || ''));
-  } catch (e) {
-    return res.redirect(302, '/');
-  }
-});
-
-
-// If we are not serving the frontend from this server but Telegram hits the root,
-// gently redirect users to CLIENT_URL so they never see 404.
-if (process.env.SERVE_CLIENT !== 'true' && process.env.CLIENT_URL) {
-  app.get('/', (req, res) => {
-    const q = req.originalUrl.includes('?') ? req.originalUrl.substring(req.originalUrl.indexOf('?')) : '';
-    const base = process.env.CLIENT_URL.endsWith('/') ? process.env.CLIENT_URL : (process.env.CLIENT_URL + '/');
-    return res.redirect(302, base + (q || ''));
-  });
-}
-
-// --- Robust /start handlers (fixes 'Not Found' from bottom Open button) ---
+// --- Redirect helper ---
 const redirectToClient = (req, res) => {
   try {
     const q = req.originalUrl.includes('?') ? req.originalUrl.substring(req.originalUrl.indexOf('?')) : '';
@@ -514,17 +407,18 @@ const redirectToClient = (req, res) => {
     const base = client.endsWith('/') ? client : client + '/';
     return res.redirect(302, base + (q || ''));
   } catch (e) {
+    console.error('Redirect error', e);
     return res.redirect(302, '/');
   }
 };
+
+// --- Ensure Telegram “Open” button works ---
 app.all(['/start', '/start/*'], redirectToClient);
 
+// --- Root fallback ---
+app.all(['/', '/index.html'], redirectToClient);
 
-// --- Root fallback: always send users to client when available ---
-if (process.env.CLIENT_URL) {
-  app.all(['/', '/index.html'], (req, res, next) => redirectToClient(req, res));
-}
-// --- Serve Frontend (optional) ---
+// --- Serve frontend locally if enabled ---
 if (process.env.SERVE_CLIENT === 'true') {
   const dist = path.join(__dirname, '..', 'client', 'dist');
   app.use(express.static(dist));
@@ -535,17 +429,4 @@ if (process.env.SERVE_CLIENT === 'true') {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
-
-// --- Telegram MiniApp redirects --- //
-const CLIENT_URL = process.env.CLIENT_URL || "https://<your-frontend>.vercel.app";
-
-app.get("/", (req, res) => {
-  res.redirect(CLIENT_URL);
-});
-
-app.get("/start", (req, res) => {
-  const ref = req.query.ref || "";
-  res.redirect(`${CLIENT_URL}/?ref=${ref}`);
-});
-
 });
