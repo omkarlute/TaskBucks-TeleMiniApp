@@ -505,6 +505,25 @@ if (process.env.SERVE_CLIENT !== 'true' && process.env.CLIENT_URL) {
     return res.redirect(302, base + (q || ''));
   });
 }
+
+// --- Robust /start handlers (fixes 'Not Found' from bottom Open button) ---
+const redirectToClient = (req, res) => {
+  try {
+    const q = req.originalUrl.includes('?') ? req.originalUrl.substring(req.originalUrl.indexOf('?')) : '';
+    const client = process.env.CLIENT_URL || (process.env.SERVE_CLIENT === 'true' ? '/' : '/');
+    const base = client.endsWith('/') ? client : client + '/';
+    return res.redirect(302, base + (q || ''));
+  } catch (e) {
+    return res.redirect(302, '/');
+  }
+};
+app.all(['/start', '/start/*'], redirectToClient);
+
+
+// --- Root fallback: always send users to client when available ---
+if (process.env.CLIENT_URL) {
+  app.all(['/', '/index.html'], (req, res, next) => redirectToClient(req, res));
+}
 // --- Serve Frontend (optional) ---
 if (process.env.SERVE_CLIENT === 'true') {
   const dist = path.join(__dirname, '..', 'client', 'dist');
