@@ -229,7 +229,19 @@ const meHandler = async (req, res) => {
 
 const tasksHandler = async (req, res) => {
   try {
+    console.log('📋 GET /tasks called');
     const tasks = await Task.find({ active: true });
+    console.log(`📊 Found ${tasks.length} active tasks`);
+    
+    if (tasks.length === 0) {
+      console.log('⚠️  No active tasks found, checking all tasks...');
+      const allTasks = await Task.find({});
+      console.log(`📊 Total tasks in database: ${allTasks.length}`);
+      allTasks.forEach(t => {
+        console.log(`  - ${t.title} (active: ${t.active})`);
+      });
+    }
+    
     res.json({ tasks });
   } catch (error) {
     console.error('Tasks error', error);
