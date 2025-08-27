@@ -13,24 +13,3 @@ body {
 
 html, body, #root { height: 100%; }
 * { -webkit-tap-highlight-color: transparent; }
-
-
-/* --- Enhanced theme tokens --- */
-:root {
-  color-scheme: dark;
-  --bg: #05070d;
-  --card: #0b0f17;
-  --text: #e6ebf3;
-  --subtle: #9aa3b2;
-  --accent: #7cf3c3;
-}
-
-.bg-background { background: radial-gradient(1200px 600px at 10% -20%, rgba(124,243,195,0.12), transparent), var(--bg); }
-.bg-card { background-color: var(--card); }
-.text-text { color: var(--text); }
-.text-subtle { color: var(--subtle); }
-.bg-accent { background-color: var(--accent); }
-.shadow-glow { box-shadow: 0 0 24px rgba(124,243,195,0.25); }
-
-/* Buttons focus */
-button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 12px; }
