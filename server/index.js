@@ -1,348 +1,309 @@
-import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import morgan from 'morgan';
-import jwt from 'jsonwebtoken';
-import cookieParser from 'cookie-parser';
-import crypto from 'crypto';
-import dotenv from 'dotenv';
-import mongoose from 'mongoose';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { nanoid } from 'nanoid';
 
-dotenv.config();
+import express from 'express'
+import cors from 'cors'
+import helmet from 'helmet'
+import morgan from 'morgan'
+import cookieParser from 'cookie-parser'
+import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import mongoose from 'mongoose'
+import crypto from 'crypto'
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+dotenv.config()
 
-const app = express();
-app.use(express.json());
-app.use(helmet());
-app.use(cookieParser());
-app.use(morgan('dev'));
-app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true }));
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
-// --- Mongo ---
-const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tasktoearn';
-mongoose.connect(mongoUri, {})
-  .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('MongoDB error:', err));
+// ---------- Mongo ----------
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/teleminiapp'
+await mongoose.connect(MONGODB_URI, { dbName: 'teleminiapp' })
 
-// --- Schemas ---
-const TaskSchema = new mongoose.Schema({
-  id: { type: String, unique: true },
-  title: String,
-  link: String,
-  reward: Number,
-  code: String,
-  active: { type: Boolean, default: true }
-});
-const UserSchema = new mongoose.Schema({
-  id: { type: String, unique: true },
-  first_name: String,
-  last_name: String,
+const userSchema = new mongoose.Schema({
+  telegramId: { type: String, index: true, unique: true },
+  firstName: String,
+  lastName: String,
   username: String,
   balance: { type: Number, default: 0 },
-  completedTaskIds: [String],
-  referrerId: { type: String, default: null },
-  referrals: [String],
-  referralEarnings: { type: Number, default: 0 }
-});
-const WithdrawalSchema = new mongoose.Schema({
-  id: { type: String, unique: true },
-  userId: String,
-  method: String,
-  details: Object,
+  referralEarnings: { type: Number, default: 0 },
+  referrerId: { type: String, default: null },      // telegramId of referrer
+  referrals: [{ type: String }],                    // telegramIds
+  referralsCount: { type: Number, default: 0 },
+  completedTasks: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Task' }],
+  createdAt: { type: Date, default: Date.now }
+})
+
+const taskSchema = new mongoose.Schema({
+  title: String,
+  description: String,
+  url: String,
+  reward: Number,
+  code: String,           // secret verification code
+  isActive: { type: Boolean, default: true },
+  order: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now }
+})
+
+const withdrawSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   amount: Number,
-  status: String,
-  createdAt: Date
-});
+  address: String,
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now }
+})
 
-const Task = mongoose.model('Task', TaskSchema);
-const User = mongoose.model('User', UserSchema);
-const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
+const User = mongoose.model('User', userSchema)
+const Task = mongoose.model('Task', taskSchema)
+const Withdrawal = mongoose.model('Withdrawal', withdrawSchema)
 
-// --- Seed Tasks helper ---
-async function seedTasks() {
-  try {
-    const count = await Task.countDocuments();
-    if (count === 0) {
-      console.log('Seeding sample tasks...');
-      const samples = [
-        { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', reward: 10, code: '1111', active: true },
-        { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', reward: 5, code: '2222', active: true },
-        { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', reward: 2, code: '3333', active: true },
-        { id: nanoid(8), title: 'Follow on Tr', link:'https://twitter.com/example', reward: 3, code: '4444', active: true }
-];
-      await Task.insertMany(samples);
-      console.log('Seeded tasks:', samples.length);
-    }
-  } catch (e) {
-    console.error('seedTasks error', e);
-  }
+// ---------- Seed demo tasks if empty ----------
+if ((await Task.countDocuments()) === 0) {
+  await Task.create([
+    { title: 'Join our Telegram Channel', description: 'Stay updated—join and find the code in the pinned post.', url: 'https://t.me/example_channel', reward: 1, code: 'JOIN2025', order: 1 },
+    { title: 'Follow our X (Twitter)', description: 'Open the link and find the code in bio.', url: 'https://x.com/example', reward: 1, code: 'FOLLOWX', order: 2 },
+    { title: 'Visit our Website', description: 'Open the site and find the footer code.', url: 'https://example.com', reward: 2, code: 'SITEOK', order: 3 }
+  ])
+  console.log('✅ Seeded demo tasks')
 }
-seedTasks().catch(console.error);
 
-// --- Telegram init helpers ---
-function getCheckString(params) {
-  const keys = Object.keys(params).sort();
-  return keys.filter(k => k !== 'hash').map(k => `${k}=${params[k]}`).join('\n');
-}
+// ---------- Telegram WebApp auth (safe + permissive) ----------
+// We validate Telegram initData if provided. For local/dev, we also accept anon IDs.
 function parseInitData(initData) {
-  const pairs = initData.split('&');
-  const out = {};
-  for (const p of pairs) {
-    const [k, v] = p.split('=');
-    if (!k) continue;
-    out[k] = decodeURIComponent(v || '');
-  }
-  return out;
-}
-function verifyTelegramInitData(initData, botToken) {
-  try {
-    const data = parseInitData(initData);
-    const hash = data.hash;
-    delete data.hash;
-    const dataCheckString = getCheckString(data);
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-    const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    return hmac === hash;
-  } catch (e) {
-    return false;
-  }
+  const params = new URLSearchParams(initData)
+  const userStr = params.get('user')
+  let user = null
+  try { user = userStr ? JSON.parse(userStr) : null } catch {}
+  return { params, user }
 }
 
-// --- API Auth Middleware ---
-function telegramAuth(req, res, next) {
-  const initData = req.header('x-telegram-init-data') || req.query.initData;
-
-  // ✅ Allow dev without initData
-  if ((!initData || initData === '') && process.env.NODE_ENV !== 'production') {
-    req.tgUser = { id: "dev_anon", first_name: "Dev", username: "localtester" };
-    return next();
-  }
-
-  // Allow anonymous web users via x-anon-id header
-  if (!initData) {
-    const anon = req.header('x-anon-id') || null;
-    if (anon) {
-      req.tgUser = { id: anon, first_name: 'WebUser', username: `web_${anon}` };
-      return next();
-    }
-    return res.status(401).json({ error: 'Missing Telegram init data' });
-  }
-
-  const ok = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN || '');
-  if (!ok) {
-    return res.status(401).json({ error: 'Invalid Telegram init data' });
-  }
-
-  const parsed = parseInitData(initData);
-  try {
-    req.tgUser = JSON.parse(parsed.user || '{}');
-  } catch {
-    req.tgUser = null;
-  }
-  next();
+function checkTelegramSignature(initData) {
+  // Verification per Telegram docs:
+  // https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) return false
+  const secret = crypto.createHmac('sha256', 'WebAppData').update(token).digest()
+  const hash = new URLSearchParams(initData).get('hash') || ''
+  const dataCheckString = Array.from(new URLSearchParams(initData))
+    .filter(([k]) => k !== 'hash')
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join('\n')
+  const hmac = crypto.createHmac('sha256', secret).update(dataCheckString).digest('hex')
+  return hmac === hash
 }
 
-// Admin auth middleware
-function adminAuth(req, res, next) {
-  try {
-    const token = req.cookies?.admin_token || '';
-    if (!token) return res.status(401).json({ error: 'Unauthorized' });
-    const payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret');
-    if (payload?.role !== 'admin') return res.status(401).json({ error: 'Unauthorized' });
-    req.admin = { username: payload.username };
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-}
+async function getOrCreateUser({ tgUser, anonId, referrer }) {
+  // Use telegramId if available; else fallback to anonId for dev
+  const telegramId = tgUser?.id ? String(tgUser.id) : null
+  const key = telegramId || `anon_${anonId}`
+  if (!key) throw new Error('No identity')
 
-// --- API Routes (Apply directly to app) ---
-
-// Admin auth endpoints
-app.post('/api/admin/login', async (req, res) => {
-  const { username, password } = req.body || {};
-  const u = process.env.ADMIN_USERNAME || 'admin';
-  const p = process.env.ADMIN_PASSWORD || 'password';
-  if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
-  if (username !== u || password !== p) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = jwt.sign({ role: 'admin', username }, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret', { expiresIn: '7d' });
-  res.cookie('admin_token', token, { httpOnly: true, sameSite: 'lax', secure: false, maxAge: 7*24*60*60*1000 });
-  return res.json({ ok: true });
-});
-
-app.post('/api/admin/logout', (req, res) => {
-  res.clearCookie('admin_token');
-  res.json({ ok: true });
-});
-
-// User endpoints (with telegram auth) - Handle both /api and direct routes
-const meHandler = async (req, res) => {
-  let user = await User.findOne({ id: req.tgUser.id });
+  let user = await User.findOne({ telegramId: key })
   if (!user) {
     user = await User.create({
-      id: req.tgUser.id,
-      first_name: req.tgUser.first_name,
-      username: req.tgUser.username
-    });
-  }
-  // attach referrer if provided via header or query param (only once)
-  const ref = req.header('x-referrer') || req.query.ref || null;
-  if (ref && !user.referrerId && ref !== user.id) {
-    const refUser = await User.findOne({ id: ref });
-    if (refUser) {
-      user.referrerId = refUser.id;
-      await user.save();
-      if (!refUser.referrals.includes(user.id)) {
-        refUser.referrals.push(user.id);
-        await refUser.save();
+      telegramId: key,
+      firstName: tgUser?.first_name || '',
+      lastName: tgUser?.last_name || '',
+      username: tgUser?.username || '',
+      balance: 0
+    })
+    // Handle referral attribution once on first creation
+    if (referrer && referrer !== key) {
+      const r = await User.findOne({ telegramId: String(referrer) })
+      if (r) {
+        user.referrerId = r.telegramId
+        await user.save()
+        // Unique referral count
+        if (!r.referrals.includes(user.telegramId)) {
+          r.referrals.push(user.telegramId)
+          r.referralsCount = r.referrals.length
+          await r.save()
+        }
       }
     }
   }
-  res.json({ user });
-};
+  return user
+}
 
-const tasksHandler = async (req, res) => {
-  const tasks = await Task.find({ active: true });
-  res.json({ tasks });
-};
+const app = express()
+app.use(helmet())
+app.use(cors({ origin: true, credentials: true }))
+app.use(morgan('dev'))
+app.use(express.json({ limit: '1mb' }))
+app.use(cookieParser())
 
-const taskVerifyHandler = async (req, res) => {
-  const taskId = req.params.id;
-  const { code } = req.body || {};
-  const task = await Task.findOne({ id: taskId, active: true });
-  if (!task) return res.status(404).json({ error: 'Task not found' });
-  if (!code || String(code).trim() !== String(task.code).trim()) return res.status(400).json({ error: 'Incorrect code' });
+// Attach user to req if possible
+app.use(async (req, res, next) => {
+  try {
+    const initData = req.headers['x-telegram-init-data'] || ''
+    const anonId = req.headers['x-anon-id'] || null
+    const referrer = req.headers['x-referrer'] || null
 
-  let user = await User.findOne({ id: req.tgUser.id });
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
-    return res.status(400).json({ error: 'Task already completed' });
+    let tgUser = null
+    if (initData) {
+      const { user } = parseInitData(initData)
+      // Only if signature is valid we trust tgUser fully
+      if (user && checkTelegramSignature(initData)) {
+        tgUser = user
+      }
+    }
+    req.auth = { initDataPresent: !!initData, tgUser, anonId, referrer }
+    if (!req.user) {
+      // Lazy-load user record (create if needed)
+      const u = await getOrCreateUser({ tgUser, anonId, referrer })
+      req.user = u
+    }
+    next()
+  } catch (e) {
+    console.error('Auth attach error', e)
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
+})
+
+// ---------- Helpers ----------
+const REFERRAL_PCT = Number(process.env.REFERRAL_PCT || 0.05)
+
+function taskToClient(task, user) {
+  const completed = user.completedTasks?.some(tid => String(tid) === String(task._id))
+  return {
+    id: String(task._id),
+    title: task.title,
+    description: task.description,
+    url: task.url,
+    reward: task.reward,
+    status: completed ? 'completed' : 'pending',
+    isActive: task.isActive,
+    order: task.order
+  }
+}
+
+// ---------- API ----------
+
+// Health
+app.get('/api/health', (_, res) => res.json({ ok: true, time: new Date().toISOString() }))
+
+// Current user
+app.get('/api/me', async (req, res) => {
+  const u = await User.findById(req.user._id).lean()
+  const completedCount = (u.completedTasks || []).length
+  res.json({
+    id: u.telegramId,
+    username: u.username,
+    firstName: u.firstName,
+    balance: u.balance,
+    referralEarnings: u.referralEarnings,
+    referralsCount: u.referralsCount || (u.referrals?.length || 0),
+    completedCount
+  })
+})
+
+// Tasks list (pending first, then completed)
+app.get('/api/tasks', async (req, res) => {
+  const tasks = await Task.find({ isActive: true }).sort({ order: 1, createdAt: 1 })
+  const mapped = tasks.map(t => taskToClient(t, req.user))
+
+  // Move completed to bottom or hide based on query
+  const mode = (req.query.mode || 'show').toLowerCase() // 'show' | 'hide'
+  const pending = mapped.filter(t => t.status !== 'completed')
+  const done = mapped.filter(t => t.status === 'completed')
+
+  if (mode === 'hide') return res.json(pending)
+  res.json([...pending, ...done])
+})
+
+// Verify task by code
+app.post('/api/tasks/:id/verify', async (req, res) => {
+  const { code } = req.body || {}
+  const task = await Task.findById(req.params.id)
+  if (!task || !task.isActive) return res.status(404).json({ error: 'Task not found' })
+
+  const u = await User.findById(req.user._id)
+
+  // already completed
+  if (u.completedTasks.some(tid => String(tid) === String(task._id))) {
+    return res.json({ ok: true, status: 'completed', balance: u.balance })
+  }
+
+  if (!code || code.trim().toUpperCase() !== String(task.code).trim().toUpperCase()) {
+    return res.status(400).json({ error: 'Invalid code' })
   }
 
   // credit user
-  user.balance = (user.balance || 0) + (task.reward || 0);
-  user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
-  await user.save();
+  u.completedTasks.push(task._id)
+  u.balance = Number((u.balance + task.reward).toFixed(8))
 
-  // referral 5% lifetime bonus
-  if (user.referrerId) {
-    const refUser = await User.findOne({ id: user.referrerId });
-    if (refUser) {
-      const bonus = (task.reward || 0) * 0.05;
-      refUser.balance = (refUser.balance || 0) + bonus;
-      refUser.referralEarnings = (refUser.referralEarnings || 0) + bonus;
-      if (!refUser.referrals.includes(user.id)) refUser.referrals.push(user.id);
-      await refUser.save();
+  // referral earnings
+  if (u.referrerId) {
+    const ref = await User.findOne({ telegramId: u.referrerId })
+    if (ref) {
+      const amt = Number((task.reward * REFERRAL_PCT).toFixed(8))
+      ref.balance = Number((ref.balance + amt).toFixed(8))
+      ref.referralEarnings = Number((ref.referralEarnings + amt).toFixed(8))
+      await ref.save()
     }
   }
 
-  res.json({ ok: true });
-};
+  await u.save()
+  return res.json({
+    ok: true,
+    status: 'completed',
+    taskId: String(task._id),
+    newBalance: u.balance
+  })
+})
 
-const withdrawHandler = async (req, res) => {
-  const { method, details } = req.body || {};
-  let user = await User.findOne({ id: req.tgUser.id });
-  if (!user) return res.status(404).json({ error: 'User not found' });
+// Withdraw create
+app.post('/api/withdraw', async (req, res) => {
+  const { amount, address } = req.body || {}
+  const u = await User.findById(req.user._id)
 
-  const amount = Math.floor((user.balance || 0) * 100) / 100;
-  if (!amount || amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' })
+  if (!address) return res.status(400).json({ error: 'Address required' })
+  if (u.balance < amount) return res.status(400).json({ error: 'Insufficient balance' })
 
-  const w = await Withdrawal.create({
-    id: nanoid(12),
-    userId: user.id,
-    method: (method||'').toLowerCase(),
-    details: details || {},
-    amount,
-    status: 'pending',
-    createdAt: new Date()
-  });
-  user.balance = 0;
-  await user.save();
-  res.json({ ok: true, withdraw: w });
-};
+  u.balance = Number((u.balance - amount).toFixed(8))
+  await u.save()
 
-const withdrawsHandler = async (req, res) => {
-  const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
-  res.json({ withdraws: list });
-};
+  const w = await Withdrawal.create({ userId: u._id, amount, address, status: 'pending' })
+  res.json({ ok: true, withdrawalId: String(w._id), balance: u.balance })
+})
 
-const referralsHandler = async (req, res) => {
-  const user = await User.findOne({ id: req.tgUser.id });
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  const refs = await User.find({ referrerId: user.id }).select('id first_name username');
-  res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
-};
+// Withdraw list
+app.get('/api/withdraw', async (req, res) => {
+  const list = await Withdrawal.find({ userId: req.user._id }).sort({ createdAt: -1 }).lean()
+  res.json(list.map(w => ({
+    id: String(w._id),
+    amount: w.amount,
+    address: w.address,
+    status: w.status,
+    createdAt: w.createdAt
+  })))
+})
 
-// Apply routes to both /api and direct paths
-app.get('/api/me', telegramAuth, meHandler);
-app.get('/me', telegramAuth, meHandler);
+// Referrals
+app.get('/api/referrals', async (req, res) => {
+  const u = await User.findById(req.user._id).lean()
+  const origin = req.headers['origin'] || ''
+  const host = req.headers['x-forwarded-host'] || req.headers['host']
+  const proto = (req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http'))
+  const base = `${proto}://${host || origin.replace(/^https?:\/\//, '')}`
+  const link = `${base}/?ref=${encodeURIComponent(u.telegramId)}`
 
-app.get('/api/tasks', telegramAuth, tasksHandler);
-app.get('/tasks', telegramAuth, tasksHandler);
+  res.json({
+    link,
+    count: u.referralsCount || (u.referrals?.length || 0),
+    earnings: u.referralEarnings || 0,
+    referrals: (u.referrals || []).map(x => ({ telegramId: x }))
+  })
+})
 
-app.post('/api/tasks/:id/verify', telegramAuth, taskVerifyHandler);
-app.post('/tasks/:id/verify', telegramAuth, taskVerifyHandler);
-
-app.post('/api/withdraw', telegramAuth, withdrawHandler);
-app.post('/withdraw', telegramAuth, withdrawHandler);
-
-app.get('/api/withdraws', telegramAuth, withdrawsHandler);
-app.get('/withdraws', telegramAuth, withdrawsHandler);
-
-app.get('/api/referrals', telegramAuth, referralsHandler);
-app.get('/referrals', telegramAuth, referralsHandler);
-
-// Admin routes
-app.post('/api/admin/seed', adminAuth, async (req, res) => {
-  await seedTasks();
-  res.json({ ok: true });
-});
-
-app.get('/api/admin/tasks', adminAuth, async (req, res) => {
-  const tasks = await Task.find({}).sort({ active: -1 });
-  res.json({ tasks });
-});
-
-app.post('/api/admin/tasks', adminAuth, async (req, res) => {
-  const { title, link, reward, code, active=true } = req.body || {};
-  if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
-  const t = await Task.create({ id: nanoid(8), title, link, reward, code, active });
-  res.json({ task: t });
-});
-
-app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
-  const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
-  res.json({ withdrawals });
-});
-
-app.post('/api/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
-  const { status } = req.body || {};
-  const allowed = ['pending','approved','completed','rejected'];
-  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  const w = await Withdrawal.findOne({ id: req.params.id });
-  if (!w) return res.status(404).json({ error: 'Not found' });
-  w.status = status;
-  await w.save();
-  res.json({ ok: true, withdrawal: w });
-});
-
-// --- Healthcheck ---
-app.get('/healthz', (_, res) => res.json({ ok: true }));
-
-// --- Serve Frontend (optional) ---
+// ----------- Serve frontend in production -----------
 if (process.env.SERVE_CLIENT === 'true') {
-  const dist = path.join(__dirname, '..', 'client', 'dist');
-  app.use(express.static(dist));
-  app.get('*', (_, res) => res.sendFile(path.join(dist, 'index.html')));
+  const dist = path.join(__dirname, '..', 'client', 'dist')
+  app.use(express.static(dist))
+  app.get('*', (_, res) => res.sendFile(path.join(dist, 'index.html')))
 }
 
-// --- Start ---
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
+// ---------- Start ----------
+const PORT = process.env.PORT || 8080
+app.listen(PORT, () => console.log(`✅ Server listening on ${PORT}`))
