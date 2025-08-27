@@ -91,6 +91,15 @@ async function seedTasks() {
         },
         { 
           id: nanoid(8), 
+          title: 'Visit our test', 
+          link: 'https://example.com', 
+          description: 'Check out our amazing website',
+          reward: 5, 
+          code: '1212', 
+          active: true 
+        },
+        { 
+          id: nanoid(8), 
           title: 'Follow on Twitter', 
           link: 'https://twitter.com/example', 
           description: 'Follow us for the latest updates',
