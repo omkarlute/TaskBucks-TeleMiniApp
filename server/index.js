@@ -383,6 +383,60 @@ app.post('/api/admin/tasks', adminAuth, async (req, res) => {
   res.json({ task: t });
 });
 
+
+// --- Additional admin endpoints (added) ---
+// Update a task
+app.put('/api/admin/tasks/:id', adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const update = req.body || {};
+    const t = await Task.findOneAndUpdate({ id }, update, { new: true });
+    if (!t) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true, task: t });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete a task
+app.delete('/api/admin/tasks/:id', adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const t = await Task.findOneAndDelete({ id });
+    if (!t) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// List users
+app.get('/api/admin/users', adminAuth, async (req, res) => {
+  const users = await User.find({}).sort({ id: 1 });
+  res.json({ users });
+});
+
+// Stats: task completions, total users, total balance
+app.get('/api/admin/stats', adminAuth, async (req, res) => {
+  const tasks = await Task.find({});
+  const users = await User.find({});
+  const withdrawals = await Withdrawal.find({});
+  const totalUsers = users.length;
+  const totalTasks = tasks.length;
+  const totalWithdrawals = withdrawals.length;
+  const totalBalance = users.reduce((s,u)=>s+(u.balance||0),0);
+  // task completions per task
+  const completions = tasks.map(t=>({ id: t.id, title: t.title, completed: users.filter(u=>(u.completedTaskIds||[]).includes(t.id)).length }));
+  res.json({ totalUsers, totalTasks, totalWithdrawals, totalBalance, completions });
+});
+
+// Referral list (from users)
+app.get('/api/admin/referrals', adminAuth, async (req, res) => {
+  const users = await User.find({}).select('id username referrals referralEarnings');
+  res.json({ referrals: users });
+});
+// --- end added endpoints ---
+
 app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
   const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
   res.json({ withdrawals });
