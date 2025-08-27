@@ -70,21 +70,43 @@ const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
 async function seedTasks() {
   try {
     const count = await Task.countDocuments();
+    console.log(`📊 Current task count: ${count}`);
+    
     if (count === 0) {
-      console.log('Seeding sample tasks...');
+      console.log('🌱 Seeding sample tasks...');
       const samples = [
         { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', reward: 10, code: '1111', active: true },
         { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', reward: 5, code: '2222', active: true },
         { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', reward: 2, code: '3333', active: true }
       ];
-      await Task.insertMany(samples);
-      console.log('Seeded tasks:', samples.length);
+      
+      const inserted = await Task.insertMany(samples);
+      console.log(`✅ Seeded ${inserted.length} tasks successfully!`);
+      
+      // Verify they were inserted
+      const newCount = await Task.countDocuments();
+      console.log(`📊 New task count after seeding: ${newCount}`);
+    } else {
+      console.log('✅ Tasks already exist, skipping seed');
     }
+    
+    // Always show what tasks exist
+    const allTasks = await Task.find({});
+    console.log('📋 Current tasks in database:');
+    allTasks.forEach(t => {
+      console.log(`  - ${t.title} (${t.active ? 'active' : 'inactive'}) - Reward: ${t.reward}`);
+    });
+    
   } catch (e) {
-    console.error('seedTasks error', e);
+    console.error('❌ seedTasks error', e);
   }
 }
-seedTasks().catch(console.error);
+
+// Seed after MongoDB connects
+mongoose.connection.once('open', () => {
+  console.log('🔄 Running seed tasks...');
+  seedTasks().catch(console.error);
+});
 
 // --- Telegram init helpers ---
 function getCheckString(params) {
