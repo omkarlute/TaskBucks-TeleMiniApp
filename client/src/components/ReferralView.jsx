@@ -1,3 +1,4 @@
+
 import React from 'react'
 import { Copy, Share2, Users } from 'lucide-react'
 import { toast } from 'react-hot-toast'
@@ -5,7 +6,7 @@ import { toast } from 'react-hot-toast'
 export default function ReferralView({ me, referral }) {
   const anon = (typeof window !== 'undefined' && localStorage.getItem('anonId')) || ''
   const myId = me?.id || anon || ''
-  const shareUrl = referral?.link || `${window.location.origin}/?ref=${myId}`
+  const shareUrl = referral?.link || referral?.webLink || `${window.location.origin}/?ref=${myId}`
   const text = `Earn with me! Get paid for tasks. Use my link: ${shareUrl}`
   const shareHref = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(text)}`
 
@@ -14,29 +15,24 @@ export default function ReferralView({ me, referral }) {
       await navigator.clipboard.writeText(shareUrl)
       toast.success('Referral link copied!')
     } catch {
-      toast.error('Copy failed')
+      toast.error('Unable to copy link')
     }
   }
 
   return (
-    <div className="p-4 rounded-2xl bg-card/90 border border-white/5">
-      <div className="flex items-center justify-between">
+    <div className="bg-card border border-white/5 rounded-2xl p-4">
+      <div className="flex items-start justify-between">
         <div>
-          <h3 className="text-sm font-semibold">Referral Program</h3>
-          <div className="text-subtle text-xs mt-1">Share your link. You earn <b>5%</b> of your friends’ lifetime task earnings.</div>
+          <div className="text-muted text-xs">Share & Earn</div>
+          <div className="font-semibold mt-1">Invite friends and earn a lifetime bonus</div>
+          <div className="text-subtle text-sm mt-2">Share your link — they sign up via the bot and you get rewards.</div>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={copy} className="px-3 py-2 rounded-xl bg-white/5">Copy</button>
-          <a href={shareHref} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-white/5">Share</a>
+        <div className="flex flex-col gap-2">
+          <button onClick={copy} className="px-3 py-2 rounded-xl bg-white/10 text-sm">Copy</button>
+          <a href={shareHref} target="_blank" rel="noreferrer" className="px-3 py-2 rounded-xl bg-white text-black text-sm inline-flex items-center gap-2">
+            <Share2 size={14}/> Share via Telegram
+          </a>
         </div>
-      </div>
-
-      <div className="mt-3 text-sm">
-        <div className="break-words">{shareUrl}</div>
-      </div>
-
-      <div className="mt-3 text-xs text-subtle">
-        Lifetime referral earnings: <b className="text-text">${(referral?.referralEarnings || 0).toFixed(2)}</b>
       </div>
 
       {referral?.referrals?.length ? (
