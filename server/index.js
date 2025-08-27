@@ -472,6 +472,39 @@ app.get(['/start','/start/*'], (req, res) => {
   return res.redirect('/' + qs);
 });
 
+
+// --- Universal /start redirect (fixes 'Not Found' when Telegram opens /start) ---
+app.get(['/start', '/start/*'], (req, res) => {
+  try {
+    // Preserve any query string (e.g., tgWebAppStartParam)
+    const q = req.originalUrl.includes('?') ? req.originalUrl.substring(req.originalUrl.indexOf('?')) : '';
+    if (process.env.SERVE_CLIENT === 'true') {
+      // If we serve the client here, just send index.html at '/'
+      return res.redirect(302, '/' + (q || ''));
+    }
+    // Otherwise, redirect to external client host if provided
+    const client = process.env.CLIENT_URL;
+    if (client) {
+      const base = client.endsWith('/') ? client : client + '/';
+      return res.redirect(302, base + (q || ''));
+    }
+    // Fallback to root on this same server
+    return res.redirect(302, '/' + (q || ''));
+  } catch (e) {
+    return res.redirect(302, '/');
+  }
+});
+
+
+// If we are not serving the frontend from this server but Telegram hits the root,
+// gently redirect users to CLIENT_URL so they never see 404.
+if (process.env.SERVE_CLIENT !== 'true' && process.env.CLIENT_URL) {
+  app.get('/', (req, res) => {
+    const q = req.originalUrl.includes('?') ? req.originalUrl.substring(req.originalUrl.indexOf('?')) : '';
+    const base = process.env.CLIENT_URL.endsWith('/') ? process.env.CLIENT_URL : (process.env.CLIENT_URL + '/');
+    return res.redirect(302, base + (q || ''));
+  });
+}
 // --- Serve Frontend (optional) ---
 if (process.env.SERVE_CLIENT === 'true') {
   const dist = path.join(__dirname, '..', 'client', 'dist');
