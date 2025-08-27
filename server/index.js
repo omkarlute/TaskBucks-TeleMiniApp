@@ -31,35 +31,33 @@ mongoose.connect(mongoUri, {})
 
 // --- Schemas ---
 const TaskSchema = new mongoose.Schema({
-  id: { type: String, unique: true, required: true },
+  id: { type: String, unique: true },
   title: String,
   link: String,
+  description: { type: String, default: '' }, // Added description field
   reward: Number,
   code: String,
   active: { type: Boolean, default: true }
 });
-
 const UserSchema = new mongoose.Schema({
-  id: { type: String, unique: true, required: true },
-  telegramId: { type: String, unique: true, sparse: true }, // Add this for compatibility
+  id: { type: String, unique: true },
   first_name: String,
   last_name: String,
   username: String,
   balance: { type: Number, default: 0 },
-  completedTaskIds: { type: [String], default: [] },
+  completedTaskIds: [String],
   referrerId: { type: String, default: null },
-  referrals: { type: [String], default: [] },
+  referrals: [String],
   referralEarnings: { type: Number, default: 0 }
 });
-
 const WithdrawalSchema = new mongoose.Schema({
-  id: { type: String, unique: true, required: true },
+  id: { type: String, unique: true },
   userId: String,
   method: String,
   details: Object,
   amount: Number,
-  status: { type: String, default: 'pending' },
-  createdAt: { type: Date, default: Date.now }
+  status: String,
+  createdAt: Date
 });
 
 const Task = mongoose.model('Task', TaskSchema);
@@ -70,50 +68,51 @@ const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
 async function seedTasks() {
   try {
     const count = await Task.countDocuments();
-    console.log(`📊 Current task count: ${count}`);
-    
     if (count === 0) {
-      console.log('🌱 Seeding sample tasks...');
+      console.log('Seeding sample tasks...');
       const samples = [
-        { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', reward: 10, code: '1111', active: true },
-        { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', reward: 5, code: '2222', active: true },
-        { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', reward: 2, code: '3333', active: true }
+        { 
+          id: nanoid(8), 
+          title: 'Join our Telegram group', 
+          link: 'https://t.me/example', 
+          description: 'Join our community and stay updated',
+          reward: 10, 
+          code: '1111', 
+          active: true 
+        },
+        { 
+          id: nanoid(8), 
+          title: 'Visit our website', 
+          link: 'https://example.com', 
+          description: 'Check out our amazing website',
+          reward: 5, 
+          code: '2222', 
+          active: true 
+        },
+        { 
+          id: nanoid(8), 
+          title: 'Follow on Twitter', 
+          link: 'https://twitter.com/example', 
+          description: 'Follow us for the latest updates',
+          reward: 2, 
+          code: '3333', 
+          active: true 
+        }
       ];
-      
-      const inserted = await Task.insertMany(samples);
-      console.log(`✅ Seeded ${inserted.length} tasks successfully!`);
-      
-      // Verify they were inserted
-      const newCount = await Task.countDocuments();
-      console.log(`📊 New task count after seeding: ${newCount}`);
-    } else {
-      console.log('✅ Tasks already exist, skipping seed');
+      await Task.insertMany(samples);
+      console.log('Seeded tasks:', samples.length);
     }
-    
-    // Always show what tasks exist
-    const allTasks = await Task.find({});
-    console.log('📋 Current tasks in database:');
-    allTasks.forEach(t => {
-      console.log(`  - ${t.title} (${t.active ? 'active' : 'inactive'}) - Reward: ${t.reward}`);
-    });
-    
   } catch (e) {
-    console.error('❌ seedTasks error', e);
+    console.error('seedTasks error', e);
   }
 }
-
-// Seed after MongoDB connects
-mongoose.connection.once('open', () => {
-  console.log('🔄 Running seed tasks...');
-  seedTasks().catch(console.error);
-});
+seedTasks().catch(console.error);
 
 // --- Telegram init helpers ---
 function getCheckString(params) {
   const keys = Object.keys(params).sort();
   return keys.filter(k => k !== 'hash').map(k => `${k}=${params[k]}`).join('\n');
 }
-
 function parseInitData(initData) {
   const pairs = initData.split('&');
   const out = {};
@@ -124,7 +123,6 @@ function parseInitData(initData) {
   }
   return out;
 }
-
 function verifyTelegramInitData(initData, botToken) {
   try {
     const data = parseInitData(initData);
@@ -153,7 +151,7 @@ function telegramAuth(req, res, next) {
   if (!initData) {
     const anon = req.header('x-anon-id') || null;
     if (anon) {
-      req.tgUser = { id: `anon_web_${anon}`, first_name: 'WebUser', username: `web_${anon}` };
+      req.tgUser = { id: anon, first_name: 'WebUser', username: `web_${anon}` };
       return next();
     }
     return res.status(401).json({ error: 'Missing Telegram init data' });
@@ -187,179 +185,7 @@ function adminAuth(req, res, next) {
   }
 }
 
-// --- Route Handlers ---
-const meHandler = async (req, res) => {
-  try {
-    let user = await User.findOne({ id: req.tgUser.id });
-    if (!user) {
-      // Try to find by telegramId for backward compatibility
-      user = await User.findOne({ telegramId: req.tgUser.id });
-      if (!user) {
-        user = await User.create({
-          id: req.tgUser.id,
-          telegramId: req.tgUser.id,
-          first_name: req.tgUser.first_name,
-          last_name: req.tgUser.last_name,
-          username: req.tgUser.username
-        });
-      }
-    }
-    
-    // attach referrer if provided via header or query param (only once)
-    const ref = req.header('x-referrer') || req.query.ref || null;
-    if (ref && !user.referrerId && ref !== user.id) {
-      const refUser = await User.findOne({ 
-        $or: [{ id: ref }, { telegramId: ref }] 
-      });
-      if (refUser) {
-        user.referrerId = refUser.id;
-        await user.save();
-        if (!refUser.referrals.includes(user.id)) {
-          refUser.referrals.push(user.id);
-          await refUser.save();
-        }
-      }
-    }
-    res.json({ user });
-  } catch (error) {
-    console.error('Auth attach error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-const tasksHandler = async (req, res) => {
-  try {
-    console.log('📋 GET /tasks called');
-    const tasks = await Task.find({ active: true });
-    console.log(`📊 Found ${tasks.length} active tasks`);
-    
-    if (tasks.length === 0) {
-      console.log('⚠️  No active tasks found, checking all tasks...');
-      const allTasks = await Task.find({});
-      console.log(`📊 Total tasks in database: ${allTasks.length}`);
-      allTasks.forEach(t => {
-        console.log(`  - ${t.title} (active: ${t.active})`);
-      });
-    }
-    
-    res.json({ tasks });
-  } catch (error) {
-    console.error('Tasks error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-const taskVerifyHandler = async (req, res) => {
-  try {
-    const taskId = req.params.id;
-    const { code } = req.body || {};
-    
-    const task = await Task.findOne({ id: taskId, active: true });
-    if (!task) return res.status(404).json({ error: 'Task not found' });
-    
-    if (!code || String(code).trim() !== String(task.code).trim()) {
-      return res.status(400).json({ error: 'Incorrect code' });
-    }
-
-    let user = await User.findOne({ 
-      $or: [{ id: req.tgUser.id }, { telegramId: req.tgUser.id }] 
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
-      return res.status(400).json({ error: 'Task already completed' });
-    }
-
-    // credit user
-    user.balance = (user.balance || 0) + (task.reward || 0);
-    user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
-    await user.save();
-
-    // referral 5% lifetime bonus
-    if (user.referrerId) {
-      const refUser = await User.findOne({ 
-        $or: [{ id: user.referrerId }, { telegramId: user.referrerId }] 
-      });
-      if (refUser) {
-        const bonus = (task.reward || 0) * 0.05;
-        refUser.balance = (refUser.balance || 0) + bonus;
-        refUser.referralEarnings = (refUser.referralEarnings || 0) + bonus;
-        if (!refUser.referrals.includes(user.id)) refUser.referrals.push(user.id);
-        await refUser.save();
-      }
-    }
-
-    res.json({ ok: true });
-  } catch (error) {
-    console.error('Task verify error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-const withdrawHandler = async (req, res) => {
-  try {
-    const { method, details } = req.body || {};
-    let user = await User.findOne({ 
-      $or: [{ id: req.tgUser.id }, { telegramId: req.tgUser.id }] 
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const amount = Math.floor((user.balance || 0) * 100) / 100;
-    if (!amount || amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
-
-    const w = await Withdrawal.create({
-      id: nanoid(12),
-      userId: user.id,
-      method: (method||'').toLowerCase(),
-      details: details || {},
-      amount,
-      status: 'pending',
-      createdAt: new Date()
-    });
-    user.balance = 0;
-    await user.save();
-    res.json({ ok: true, withdraw: w });
-  } catch (error) {
-    console.error('Withdraw error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-const withdrawsHandler = async (req, res) => {
-  try {
-    const user = await User.findOne({ 
-      $or: [{ id: req.tgUser.id }, { telegramId: req.tgUser.id }] 
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    const list = await Withdrawal.find({ userId: user.id }).sort({ createdAt: -1 });
-    res.json({ withdraws: list });
-  } catch (error) {
-    console.error('Withdraws error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-const referralsHandler = async (req, res) => {
-  try {
-    const user = await User.findOne({ 
-      $or: [{ id: req.tgUser.id }, { telegramId: req.tgUser.id }] 
-    });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    const refs = await User.find({ referrerId: user.id }).select('id first_name username');
-    res.json({ 
-      link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, 
-      referrals: refs, 
-      referralEarnings: user.referralEarnings || 0 
-    });
-  } catch (error) {
-    console.error('Referrals error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-};
-
-// --- API Routes ---
+// --- API Routes (Apply directly to app) ---
 
 // Admin auth endpoints
 app.post('/api/admin/login', async (req, res) => {
@@ -378,7 +204,132 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// User endpoints - Handle both /api and direct routes
+// User endpoints (with telegram auth) - Handle both /api and direct routes
+const meHandler = async (req, res) => {
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) {
+    user = await User.create({
+      id: req.tgUser.id,
+      first_name: req.tgUser.first_name,
+      username: req.tgUser.username
+    });
+  }
+  // attach referrer if provided via header or query param (only once)
+  const ref = req.header('x-referrer') || req.query.ref || null;
+  if (ref && !user.referrerId && ref !== user.id) {
+    const refUser = await User.findOne({ id: ref });
+    if (refUser) {
+      user.referrerId = refUser.id;
+      await user.save();
+      if (!refUser.referrals.includes(user.id)) {
+        refUser.referrals.push(user.id);
+        await refUser.save();
+      }
+    }
+  }
+  res.json({ user });
+};
+
+const tasksHandler = async (req, res) => {
+  console.log('📋 GET /tasks called');
+  
+  // Get current user to check completed tasks
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) {
+    user = await User.create({
+      id: req.tgUser.id,
+      first_name: req.tgUser.first_name,
+      username: req.tgUser.username
+    });
+  }
+
+  const tasks = await Task.find({ active: true });
+  console.log('📊 Found', tasks.length, 'active tasks');
+  
+  // Add completion status and transform data for frontend
+  const transformedTasks = tasks.map(task => ({
+    id: task.id,
+    title: task.title,
+    url: task.link, // Transform link -> url for frontend
+    description: task.description || `Complete this task to earn $${task.reward}`,
+    reward: task.reward,
+    code: task.code,
+    active: task.active,
+    status: (user.completedTaskIds || []).includes(task.id) ? 'completed' : 'pending'
+  }));
+
+  console.log('📋 Sending tasks:', transformedTasks.map(t => `${t.title} (${t.status})`));
+  res.json({ tasks: transformedTasks });
+};
+
+const taskVerifyHandler = async (req, res) => {
+  const taskId = req.params.id;
+  const { code } = req.body || {};
+  const task = await Task.findOne({ id: taskId, active: true });
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  if (!code || String(code).trim() !== String(task.code).trim()) return res.status(400).json({ error: 'Incorrect code' });
+
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
+    return res.status(400).json({ error: 'Task already completed' });
+  }
+
+  // credit user
+  user.balance = (user.balance || 0) + (task.reward || 0);
+  user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
+  await user.save();
+
+  // referral 5% lifetime bonus
+  if (user.referrerId) {
+    const refUser = await User.findOne({ id: user.referrerId });
+    if (refUser) {
+      const bonus = (task.reward || 0) * 0.05;
+      refUser.balance = (refUser.balance || 0) + bonus;
+      refUser.referralEarnings = (refUser.referralEarnings || 0) + bonus;
+      if (!refUser.referrals.includes(user.id)) refUser.referrals.push(user.id);
+      await refUser.save();
+    }
+  }
+
+  res.json({ ok: true });
+};
+
+const withdrawHandler = async (req, res) => {
+  const { method, details } = req.body || {};
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const amount = Math.floor((user.balance || 0) * 100) / 100;
+  if (!amount || amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
+
+  const w = await Withdrawal.create({
+    id: nanoid(12),
+    userId: user.id,
+    method: (method||'').toLowerCase(),
+    details: details || {},
+    amount,
+    status: 'pending',
+    createdAt: new Date()
+  });
+  user.balance = 0;
+  await user.save();
+  res.json({ ok: true, withdraw: w });
+};
+
+const withdrawsHandler = async (req, res) => {
+  const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
+  res.json({ withdraws: list });
+};
+
+const referralsHandler = async (req, res) => {
+  const user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const refs = await User.find({ referrerId: user.id }).select('id first_name username');
+  res.json({ link: `${req.protocol}://${req.get('host')}/?ref=${user.id}`, referrals: refs, referralEarnings: user.referralEarnings || 0 });
+};
+
+// Apply routes to both /api and direct paths
 app.get('/api/me', telegramAuth, meHandler);
 app.get('/me', telegramAuth, meHandler);
 
@@ -399,70 +350,48 @@ app.get('/referrals', telegramAuth, referralsHandler);
 
 // Admin routes
 app.post('/api/admin/seed', adminAuth, async (req, res) => {
-  try {
-    await seedTasks();
-    res.json({ ok: true });
-  } catch (error) {
-    console.error('Seed error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  await seedTasks();
+  res.json({ ok: true });
 });
 
 app.get('/api/admin/tasks', adminAuth, async (req, res) => {
-  try {
-    const tasks = await Task.find({}).sort({ active: -1 });
-    res.json({ tasks });
-  } catch (error) {
-    console.error('Admin tasks error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const tasks = await Task.find({}).sort({ active: -1 });
+  res.json({ tasks });
 });
 
 app.post('/api/admin/tasks', adminAuth, async (req, res) => {
-  try {
-    const { title, link, reward, code, active = true } = req.body || {};
-    if (!title || !link || !code || typeof reward !== 'number') {
-      return res.status(400).json({ error: 'Missing fields' });
-    }
-    const t = await Task.create({ id: nanoid(8), title, link, reward, code, active });
-    res.json({ task: t });
-  } catch (error) {
-    console.error('Create task error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const { title, link, reward, code, description, active=true } = req.body || {};
+  if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
+  const t = await Task.create({ 
+    id: nanoid(8), 
+    title, 
+    link, 
+    description: description || '', 
+    reward, 
+    code, 
+    active 
+  });
+  res.json({ task: t });
 });
 
 app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
-  try {
-    const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
-    res.json({ withdrawals });
-  } catch (error) {
-    console.error('Admin withdrawals error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
+  res.json({ withdrawals });
 });
 
 app.post('/api/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
-  try {
-    const { status } = req.body || {};
-    const allowed = ['pending', 'approved', 'completed', 'rejected'];
-    if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-    
-    const w = await Withdrawal.findOne({ id: req.params.id });
-    if (!w) return res.status(404).json({ error: 'Not found' });
-    
-    w.status = status;
-    await w.save();
-    res.json({ ok: true, withdrawal: w });
-  } catch (error) {
-    console.error('Update withdrawal status error', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+  const { status } = req.body || {};
+  const allowed = ['pending','approved','completed','rejected'];
+  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  const w = await Withdrawal.findOne({ id: req.params.id });
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  w.status = status;
+  await w.save();
+  res.json({ ok: true, withdrawal: w });
 });
 
 // --- Healthcheck ---
 app.get('/healthz', (_, res) => res.json({ ok: true }));
-app.get('/api/healthz', (_, res) => res.json({ ok: true }));
 
 // --- Serve Frontend (optional) ---
 if (process.env.SERVE_CLIENT === 'true') {
@@ -475,12 +404,4 @@ if (process.env.SERVE_CLIENT === 'true') {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log('Available routes:');
-  console.log('  GET  /me, /api/me');
-  console.log('  GET  /tasks, /api/tasks');
-  console.log('  POST /tasks/:id/verify, /api/tasks/:id/verify');
-  console.log('  GET  /referrals, /api/referrals');
-  console.log('  POST /withdraw, /api/withdraw');
-  console.log('  GET  /withdraws, /api/withdraws');
-  console.log('  GET  /healthz, /api/healthz');
 });
