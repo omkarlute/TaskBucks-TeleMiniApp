@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { motion } from 'framer-motion'
 import { ExternalLink, CheckCircle2, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
+import WebApp from '@twa-dev/sdk'
 
 export default function TaskCard({ task, onVerify, loading }) {
   const [open, setOpen] = useState(false)
@@ -31,9 +32,22 @@ export default function TaskCard({ task, onVerify, loading }) {
 
       <div className="flex gap-2 mt-4">
         <a
-          href={task.link}
-          target="_blank"
-          className="group flex-1 text-center py-2 rounded-xl bg-[#121826] hover:bg-[#0f1623] transition border border-white/5"
+          href={completed ? undefined : task.link}
+          onClick={(e) => {
+            if (completed) { e.preventDefault(); return; }
+            e.preventDefault();
+            try {
+              if (WebApp && WebApp.openTelegramLink) {
+                WebApp.openTelegramLink(task.link);
+              } else {
+                window.open(task.link, '_blank');
+              }
+            } catch (err) {
+              window.open(task.link, '_blank');
+            }
+          }}
+          className={clsx("group flex-1 text-center py-2 rounded-xl transition border border-white/5",
+            completed ? 'bg-[#0b0f17] text-subtle pointer-events-none opacity-60' : 'bg-[#121826] hover:bg-[#0f1623]')}
         >
           <span className="inline-flex items-center gap-1 justify-center">
             Open Task Link <ExternalLink size={14} className="opacity-70 group-hover:translate-x-0.5 transition" />
@@ -48,7 +62,7 @@ export default function TaskCard({ task, onVerify, loading }) {
           )}
         >
           {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-          Enter Code
+          {completed ? 'Completed' : 'Enter Code'}
         </button>
       </div>
 
