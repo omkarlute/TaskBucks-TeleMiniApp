@@ -535,4 +535,17 @@ if (process.env.SERVE_CLIENT === 'true') {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
+
+// --- Telegram MiniApp redirects --- //
+const CLIENT_URL = process.env.CLIENT_URL || "https://<your-frontend>.vercel.app";
+
+app.get("/", (req, res) => {
+  res.redirect(CLIENT_URL);
+});
+
+app.get("/start", (req, res) => {
+  const ref = req.query.ref || "";
+  res.redirect(`${CLIENT_URL}/?ref=${ref}`);
+});
+
 });
