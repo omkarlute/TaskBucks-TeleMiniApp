@@ -73,7 +73,7 @@ async function seedTasks() {
         { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', reward: 10, code: '1111', active: true },
         { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', reward: 5, code: '2222', active: true },
         { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', reward: 2, code: '3333', active: true },
-        { id: nanoid(8), title: 'Follow on Tr', link: 'https://twitter.com/example1', reward: 3, code: '4444', active: true }
+        { id: nanoid(8), title: 'Follow on Tr', link:'https://twitter.com/example', reward: 3, code: '4444', active: true }
 ];
       await Task.insertMany(samples);
       console.log('Seeded tasks:', samples.length);
