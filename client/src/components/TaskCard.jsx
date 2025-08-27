@@ -1,90 +1,59 @@
-import React, { useState } from 'react'
-import { motion } from 'framer-motion'
-import { ExternalLink, CheckCircle2, Loader2 } from 'lucide-react'
-import { clsx } from 'clsx'
-import WebApp from '@twa-dev/sdk'
 
-export default function TaskCard({ task, onVerify, loading }) {
+import React, { useState } from 'react'
+
+export default function TaskCard({ task, onVerify }) {
   const [open, setOpen] = useState(false)
   const [code, setCode] = useState('')
 
   const completed = task.status === 'completed'
 
   return (
-    <motion.div
-      initial={{ y: 12, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      transition={{ duration: 0.25 }}
-      className="p-4 rounded-2xl bg-card/90 backdrop-blur-md shadow-soft border border-white/5"
-    >
-      <div className="flex justify-between items-start gap-3">
-        <div className="flex-1">
-          <h3 className="text-base font-semibold leading-5">{task.title}</h3>
-          <p className="text-subtle text-xs mt-1">Reward: <span className="text-text font-medium">${task.reward.toFixed(2)}</span></p>
+    <div className="bg-card border border-white/5 rounded-2xl p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="font-medium">{task.title}</div>
+          <div className="text-sm text-muted">{task.description}</div>
         </div>
-        <span className={clsx(
-          "px-2 py-1 rounded-xl text-[10px] uppercase tracking-wide",
-          completed ? 'bg-green-500/15 text-green-300' : 'bg-yellow-500/15 text-yellow-200'
-        )}>
-          {completed ? 'Completed' : 'Pending'}
-        </span>
+        <div className="text-right">
+          <div className="text-sm text-muted">Reward</div>
+          <div className="text-lg font-semibold">{task.reward}</div>
+        </div>
       </div>
 
-      <div className="flex gap-2 mt-4">
+      <div className="mt-3 flex items-center gap-2">
         <a
-          href={completed ? undefined : task.link}
-          onClick={(e) => {
-            if (completed) { e.preventDefault(); return; }
-            e.preventDefault();
-            try {
-              if (WebApp && WebApp.openTelegramLink) {
-                WebApp.openTelegramLink(task.link);
-              } else {
-                window.open(task.link, '_blank');
-              }
-            } catch (err) {
-              window.open(task.link, '_blank');
-            }
-          }}
-          className={clsx("group flex-1 text-center py-2 rounded-xl transition border border-white/5",
-            completed ? 'bg-[#0b0f17] text-subtle pointer-events-none opacity-60' : 'bg-[#121826] hover:bg-[#0f1623]')}
+          href={task.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className={`px-4 py-2 rounded-xl text-sm border border-soft ${completed ? 'pointer-events-none opacity-50' : ''}`}
+          onClick={(e) => { if (completed) e.preventDefault() }}
         >
-          <span className="inline-flex items-center gap-1 justify-center">
-            Open Task Link <ExternalLink size={14} className="opacity-70 group-hover:translate-x-0.5 transition" />
-          </span>
+          Open Link
         </a>
+
         <button
-          disabled={completed || loading}
-          onClick={() => setOpen(true)}
-          className={clsx(
-            "px-4 py-2 rounded-xl font-medium flex items-center gap-2",
-            completed ? 'bg-[#1f2937] text-subtle' : 'bg-accent text-black shadow-glow'
-          )}
+          className={`px-4 py-2 rounded-xl text-sm ${completed ? 'bg-green-500/20 text-green-400' : 'bg-white text-black'}`}
+          onClick={() => setOpen(o => !o)}
+          disabled={completed}
         >
-          {loading ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
-          {completed ? 'Completed' : 'Enter Code'}
+          {completed ? 'Completed' : (open ? 'Hide Code' : 'Enter Code')}
         </button>
       </div>
 
-      {open && !completed && (
-        <div className="mt-3 p-3 bg-[#0f1623] rounded-xl border border-[#1f2937]">
-          <label className="text-sm text-subtle">Paste the code you saw on the destination page</label>
-          <div className="flex gap-2 mt-2">
-            <input
-              value={code}
-              onChange={e => setCode(e.target.value)}
-              placeholder="e.g., 1212"
-              className="flex-1 bg-[#0b0f17] rounded-xl px-3 py-2 outline-none border border-[#1f2937]"
-            />
-            <button
-              onClick={() => { onVerify(task.id, code); setOpen(false); setCode('') }}
-              className="px-4 py-2 rounded-xl bg-accent text-black shadow-glow"
-            >
-              Submit
-            </button>
-          </div>
+      {!completed && open && (
+        <div className="mt-3 flex items-center gap-2">
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="Enter code here"
+            className="flex-1 bg-surface border border-soft rounded-xl px-3 py-2 outline-none text-sm"
+          />
+          <button
+            className="px-4 py-2 rounded-xl bg-[rgb(var(--accent))] text-black"
+            onClick={() => { onVerify(task.id, code); setCode(''); setOpen(false) }}
+          >Submit</button>
         </div>
       )}
-    </motion.div>
-  );
+    </div>
+  )
 }

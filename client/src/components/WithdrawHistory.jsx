@@ -1,29 +1,33 @@
+
 import React from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Calendar, CheckCircle2, XCircle, Clock } from 'lucide-react'
-import { Skeleton } from './Skeleton.jsx'
 import useClient from '../useClient.js'
+import { useQuery } from '@tanstack/react-query'
 
 export default function WithdrawHistory() {
-  const client = useClient()
+  const api = useClient()
   const { data, isLoading } = useQuery({
     queryKey: ['withdraws'],
-    queryFn: async () => (await client.get('/withdraws')).data.withdraws || []
+    queryFn: async () => (await api.get('/withdraw')).data
   })
 
-  if (isLoading) return <div className="space-y-3"><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
-
-  if (!data || data.length === 0) return <div className="text-subtle text-sm p-4 rounded-xl border border-white/5 bg-card/90">No withdrawals yet.</div>
+  if (isLoading) return <div className="bg-card border border-white/5 rounded-2xl p-4 animate-pulse h-28" />
 
   return (
-    <div className="space-y-2">
-      {data.map(w => (
-        <div key={w.id} className="p-3 rounded-xl bg-card/90 border border-white/5 flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium">${w.amount.toFixed(2)} — <span className="uppercase">{w.method}</span></div>
-            <div className="text-xs text-subtle flex items-center gap-2"><Calendar size={14}/> {new Date(w.createdAt).toLocaleString()}</div>
+    <div className="space-y-3">
+      <div className="font-semibold">Withdrawals</div>
+      {(!data || !data.length) && <div className="text-muted text-sm">No withdrawal requests yet.</div>}
+      {data?.map(w => (
+        <div key={w.id} className="bg-card border border-white/5 rounded-2xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-muted">{new Date(w.createdAt).toLocaleString()}</div>
+              <div className="text-sm">To: {w.address}</div>
+            </div>
+            <div className="text-right">
+              <div className="font-semibold">{w.amount}</div>
+              <div className="text-xs text-muted">{w.status}</div>
+            </div>
           </div>
-          <span className={"text-xs px-2 py-1 rounded-lg " + (w.status==='completed' ? "bg-green-500/20 text-green-300" : w.status==='rejected' ? "bg-red-500/20 text-red-300" : "bg-yellow-500/20 text-yellow-300")}>{w.status}</span>
         </div>
       ))}
     </div>
