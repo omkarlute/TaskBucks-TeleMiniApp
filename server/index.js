@@ -147,6 +147,13 @@ async function telegramAuth(req, res, next) {
     req.tgUser = null;
   }
 
+  // Expose start_param (for referrals via deep links)
+  try {
+    req.tgStartParam = parsed.start_param || parsed.startParam || null;
+  } catch {
+    req.tgStartParam = null;
+  }
+
   // If user was previously browsing the web (anon) and then opens via Telegram,
   // merge the anonymous web profile with the Telegram profile to avoid duplicate accounts.
   try {
@@ -233,7 +240,7 @@ const meHandler = async (req, res) => {
     });
   }
   // attach referrer if provided via header or query param (only once)
-  const ref = req.header('x-referrer') || req.query.ref || null;
+  const ref = req.header('x-referrer') || req.query.ref || req.tgStartParam || null;
   if (ref && !user.referrerId && ref !== user.id) {
     const refUser = await User.findOne({ id: ref });
     if (refUser) {
@@ -298,9 +305,10 @@ const taskVerifyHandler = async (req, res) => {
   if (user.referrerId) {
     const refUser = await User.findOne({ id: user.referrerId });
     if (refUser) {
-      const bonus = (task.reward || 0) * 0.05;
-      refUser.balance = (refUser.balance || 0) + bonus;
-      refUser.referralEarnings = (refUser.referralEarnings || 0) + bonus;
+      let bonus = Number((task.reward || 0) * 0.05) || 0;
+      bonus = Math.floor(bonus * 100) / 100;
+      refUser.balance = Math.floor(((refUser.balance || 0) + bonus) * 100) / 100;
+      refUser.referralEarnings = Math.floor(((refUser.referralEarnings || 0) + bonus) * 100) / 100;
       if (!refUser.referrals.includes(user.id)) refUser.referrals.push(user.id);
       await refUser.save();
     }
@@ -452,6 +460,17 @@ app.post('/api/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
 
 // --- Healthcheck ---
 app.get('/healthz', (_, res) => res.json({ ok: true }));
+
+// Support /start and /start/* paths that Telegram may open from the chat bar
+app.get(['/start','/start/*'], (req, res) => {
+  if (process.env.SERVE_CLIENT === 'true') {
+    const dist = path.join(__dirname, '..', 'client', 'dist');
+    return res.sendFile(path.join(dist, 'index.html'));
+  }
+  const q = req.url.includes('?') ? req.url.split('?',1)[1] : '';
+  const qs = q ? ('?' + q) : '';
+  return res.redirect('/' + qs);
+});
 
 // --- Serve Frontend (optional) ---
 if (process.env.SERVE_CLIENT === 'true') {
