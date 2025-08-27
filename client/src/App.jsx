@@ -50,6 +50,23 @@ export default function App() {
   const { data: me, isLoading: meLoading } = useMe()
   const { data: tasks, isLoading: tasksLoading } = useTasks()
   const { data: referral, isLoading: refLoading } = useReferrals()
+  // Derive per-user task status and sort pending to top
+  const taskList = useMemo(() => {
+    const base = tasks?.tasks || tasks || [];
+    const completedSet = new Set(me?.user?.completedTaskIds || []);
+    const decorated = base.map(t => ({
+      ...t,
+      status: completedSet.has(t.id) ? 'completed' : 'pending'
+    }));
+    decorated.sort((a, b) => {
+      if (a.status === b.status) return 0;
+      return a.status === 'pending' ? -1 : 1;
+    });
+    return decorated;
+  }, [tasks, me]);
+
+  const [hideCompleted, setHideCompleted] = useState(false);
+
 
   
   const startTask = useMutation({
@@ -170,20 +187,50 @@ const verifyTask = useMutation({
                   <Skeleton className="h-28 rounded-2xl" />
                   <Skeleton className="h-28 rounded-2xl" />
                 </div>
-              ) : tasks?.length ? (
-                tasks.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    task={t}
-                    onVerify={(id, code) => verifyTask.mutate({ id, code })}
-                    loading={verifyTask.isPending}
-                  />
-                ))
+              ) : (taskList?.length ? (
+                <>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs text-subtle">
+                      Tasks refresh every 24 hours. Completed tasks move below.
+                    </div>
+                    <label className="text-xs inline-flex items-center gap-2 cursor-pointer select-none">
+                      <input type="checkbox" className="accent-emerald-500" checked={hideCompleted} onChange={e => setHideCompleted(e.target.checked)} />
+                      Hide completed
+                    </label>
+                  </div>
+
+                  <div className="space-y-3">
+                    {taskList.filter(t => t.status === 'pending').map((t) => (
+                      <TaskCard
+                        key={t.id}
+                        task={t}
+                        onVerify={(id, code) => verifyTask.mutate({ id, code })}
+                        loading={verifyTask.isPending}
+                      />
+                    ))}
+                  </div>
+
+                  {!hideCompleted && (
+                    <div className="mt-6">
+                      <div className="text-xs text-subtle mb-2">Completed</div>
+                      <div className="space-y-3">
+                        {taskList.filter(t => t.status === 'completed').map((t) => (
+                          <TaskCard
+                            key={t.id}
+                            task={t}
+                            onVerify={(id, code) => verifyTask.mutate({ id, code })}
+                            loading={verifyTask.isPending}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="p-4 rounded-2xl bg-card/90 border border-white/5">
                   No tasks available
                 </div>
-              )}
+              ))}
             </section>
           </>
         ) : (
