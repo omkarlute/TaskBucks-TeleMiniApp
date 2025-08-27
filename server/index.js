@@ -34,7 +34,7 @@ const TaskSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   title: String,
   link: String,
-  description: { type: String, default: '' }, // Added description field
+  description: { type: String, default: '' },
   reward: Number,
   code: String,
   active: { type: Boolean, default: true }
@@ -71,42 +71,10 @@ async function seedTasks() {
     if (count === 0) {
       console.log('Seeding sample tasks...');
       const samples = [
-        { 
-          id: nanoid(8), 
-          title: 'Join our Telegram group', 
-          link: 'https://t.me/example', 
-          description: 'Join our community and stay updated',
-          reward: 10, 
-          code: '1111', 
-          active: true 
-        },
-        { 
-          id: nanoid(8), 
-          title: 'Visit our website', 
-          link: 'https://example.com', 
-          description: 'Check out our amazing website',
-          reward: 5, 
-          code: '2222', 
-          active: true 
-        },
-        { 
-          id: nanoid(8), 
-          title: 'Visit our test', 
-          link: 'https://example.com', 
-          description: 'Check out our amazing website',
-          reward: 5, 
-          code: '1212', 
-          active: true 
-        },
-        { 
-          id: nanoid(8), 
-          title: 'Follow on Twitter', 
-          link: 'https://twitter.com/example', 
-          description: 'Follow us for the latest updates',
-          reward: 2, 
-          code: '3333', 
-          active: true 
-        }
+        { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', description: 'Join our community and stay updated', reward: 10, code: '1111', active: true },
+        { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', description: 'Check out our amazing website', reward: 5, code: '2222', active: true },
+        { id: nanoid(8), title: 'Visit our test', link: 'https://example.com', description: 'Check out our amazing website', reward: 5, code: '1212', active: true },
+        { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', description: 'Follow us for the latest updates', reward: 2, code: '3333', active: true }
       ];
       await Task.insertMany(samples);
       console.log('Seeded tasks:', samples.length);
@@ -254,7 +222,7 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// User endpoints (with telegram auth) - Handle both /api and direct routes
+// User endpoints (with telegram auth)
 const meHandler = async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
@@ -282,8 +250,7 @@ const meHandler = async (req, res) => {
 
 const tasksHandler = async (req, res) => {
   console.log('📋 GET /tasks called');
-  
-  // Get current user to check completed tasks
+
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
     user = await User.create({
@@ -294,13 +261,11 @@ const tasksHandler = async (req, res) => {
   }
 
   const tasks = await Task.find({ active: true });
-  console.log('📊 Found', tasks.length, 'active tasks');
-  
-  // Add completion status and transform data for frontend
+
   const transformedTasks = tasks.map(task => ({
     id: task.id,
     title: task.title,
-    url: task.link, // Transform link -> url for frontend
+    url: task.link,
     description: task.description || `Complete this task to earn $${task.reward}`,
     reward: task.reward,
     code: task.code,
@@ -308,7 +273,6 @@ const tasksHandler = async (req, res) => {
     status: (user.completedTaskIds || []).includes(task.id) ? 'completed' : 'pending'
   }));
 
-  console.log('📋 Sending tasks:', transformedTasks.map(t => `${t.title} (${t.status})`));
   res.json({ tasks: transformedTasks });
 };
 
@@ -433,15 +397,15 @@ app.get('/api/admin/tasks', adminAuth, async (req, res) => {
 app.post('/api/admin/tasks', adminAuth, async (req, res) => {
   const { title, link, reward, code, description, active=true } = req.body || {};
   if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
-  
-  const t = await Task.create({ 
-    id: nanoid(8), 
-    title, 
-    link, 
-    description: description || '', 
-    reward, 
-    code, 
-    active 
+
+  const t = await Task.create({
+    id: nanoid(8),
+    title,
+    link,
+    description: description || '',
+    reward,
+    code,
+    active
   });
   res.json({ task: t });
 });
