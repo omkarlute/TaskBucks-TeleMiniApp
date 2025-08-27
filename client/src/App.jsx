@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useState } from 'react'
 import WebApp from '@twa-dev/sdk'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -33,9 +32,9 @@ export default function App() {
     queryFn: async () => (await api.get('/me')).data
   })
 
-  const { data: tasks, isLoading: tasksLoading } = useQuery({
-    queryKey: ['tasks', { hideCompleted }],
-    queryFn: async () => (await api.get('/tasks', { params: { mode: hideCompleted ? 'hide' : 'show' } })).data
+  const { data: tasksData, isLoading: tasksLoading } = useQuery({
+    queryKey: ['tasks'],
+    queryFn: async () => (await api.get('/tasks')).data
   })
 
   const { data: refs, isLoading: refLoading } = useQuery({
@@ -56,7 +55,23 @@ export default function App() {
     }
   })
 
-  const balance = useMemo(() => me?.balance || 0, [me])
+  const balance = useMemo(() => me?.user?.balance || 0, [me])
+  
+  // Filter tasks based on hideCompleted toggle
+  const tasks = useMemo(() => {
+    if (!tasksData?.tasks) return []
+    
+    if (hideCompleted) {
+      return tasksData.tasks.filter(task => task.status !== 'completed')
+    }
+    
+    // Sort completed tasks to the bottom
+    return tasksData.tasks.sort((a, b) => {
+      if (a.status === 'completed' && b.status !== 'completed') return 1
+      if (a.status !== 'completed' && b.status === 'completed') return -1
+      return 0
+    })
+  }, [tasksData, hideCompleted])
 
   function openBotChat() {
     const url = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}` : null
@@ -80,7 +95,7 @@ export default function App() {
             <div className="w-8 h-8 rounded-xl bg-white text-black grid place-items-center font-bold">T</div>
             <div>
               <div className="text-sm text-muted">Welcome</div>
-              <div className="font-semibold">{me?.firstName || me?.username || 'Guest'}</div>
+              <div className="font-semibold">{me?.user?.first_name || me?.user?.username || 'Guest'}</div>
             </div>
           </div>
           <button onClick={openBotChat} className="px-3 py-2 rounded-xl bg-white text-black text-sm">Open Bot</button>
@@ -108,7 +123,7 @@ export default function App() {
           <div className="flex items-center justify-between">
             <div>
               <div className="text-muted text-sm">Available Balance</div>
-              <div className="text-3xl font-semibold">{balance.toFixed(2)}</div>
+              <div className="text-3xl font-semibold">${balance.toFixed(2)}</div>
             </div>
             <button
               onClick={() => setWithdrawOpen(true)}
@@ -138,7 +153,9 @@ export default function App() {
                 tasks?.length ? tasks.map(t => (
                   <TaskCard key={t.id} task={t} onVerify={(id, code) => verify.mutate({ id, code })} />
                 )) : (
-                  <div className="text-center text-muted py-8">No tasks right now. Check back later!</div>
+                  <div className="text-center text-muted py-8">
+                    {hideCompleted ? 'All tasks completed! Check back for new ones.' : 'No tasks right now. Check back later!'}
+                  </div>
                 )
               )}
             </div>
