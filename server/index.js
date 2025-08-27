@@ -204,12 +204,14 @@ app.post('/api/admin/login', async (req, res) => {
   if (!username || !password) return res.status(400).json({ error: 'Missing credentials' });
   if (username !== u || password !== p) return res.status(401).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ role: 'admin', username }, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret', { expiresIn: '7d' });
-  res.cookie('admin_token', token, { httpOnly: true, sameSite: 'lax', secure: false, maxAge: 7*24*60*60*1000 });
+  const cookieOpts = { httpOnly: true, sameSite: (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax')), secure: (process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production'), maxAge: 7*24*60*60*1000 };
+  res.cookie('admin_token', token, cookieOpts);
   return res.json({ ok: true });
 });
 
 app.post('/api/admin/logout', (req, res) => {
-  res.clearCookie('admin_token');
+  const cookieOpts = { httpOnly: true, sameSite: (process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax')), secure: (process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production') };
+  res.clearCookie('admin_token', cookieOpts);
   res.json({ ok: true });
 });
 
@@ -371,6 +373,32 @@ app.get('/api/admin/tasks', adminAuth, async (req, res) => {
 app.post('/api/admin/tasks', adminAuth, async (req, res) => {
   const { title, link, reward, code, description, active=true } = req.body || {};
   if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
+
+
+app.put('/api/admin/tasks/:id', adminAuth, async (req, res) => {
+  const { title, link, reward, code, description, active } = req.body || {};
+  const t = await Task.findOne({ id: req.params.id });
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  if (title !== undefined) t.title = title;
+  if (link !== undefined) t.link = link;
+  if (description !== undefined) t.description = description;
+  if (code !== undefined) t.code = code;
+  if (active !== undefined) t.active = !!active;
+  if (reward !== undefined) {
+    const num = Number(reward);
+    if (Number.isNaN(num)) return res.status(400).json({ error: 'Invalid reward' });
+    t.reward = num;
+  }
+  await t.save();
+  res.json({ task: t });
+});
+
+app.delete('/api/admin/tasks/:id', adminAuth, async (req, res) => {
+  const t = await Task.findOneAndDelete({ id: req.params.id });
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
+});
+
   const t = await Task.create({ 
     id: nanoid(8), 
     title, 
@@ -382,60 +410,6 @@ app.post('/api/admin/tasks', adminAuth, async (req, res) => {
   });
   res.json({ task: t });
 });
-
-
-// --- Additional admin endpoints (added) ---
-// Update a task
-app.put('/api/admin/tasks/:id', adminAuth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const update = req.body || {};
-    const t = await Task.findOneAndUpdate({ id }, update, { new: true });
-    if (!t) return res.status(404).json({ error: 'Not found' });
-    res.json({ ok: true, task: t });
-  } catch (e) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Delete a task
-app.delete('/api/admin/tasks/:id', adminAuth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const t = await Task.findOneAndDelete({ id });
-    if (!t) return res.status(404).json({ error: 'Not found' });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// List users
-app.get('/api/admin/users', adminAuth, async (req, res) => {
-  const users = await User.find({}).sort({ id: 1 });
-  res.json({ users });
-});
-
-// Stats: task completions, total users, total balance
-app.get('/api/admin/stats', adminAuth, async (req, res) => {
-  const tasks = await Task.find({});
-  const users = await User.find({});
-  const withdrawals = await Withdrawal.find({});
-  const totalUsers = users.length;
-  const totalTasks = tasks.length;
-  const totalWithdrawals = withdrawals.length;
-  const totalBalance = users.reduce((s,u)=>s+(u.balance||0),0);
-  // task completions per task
-  const completions = tasks.map(t=>({ id: t.id, title: t.title, completed: users.filter(u=>(u.completedTaskIds||[]).includes(t.id)).length }));
-  res.json({ totalUsers, totalTasks, totalWithdrawals, totalBalance, completions });
-});
-
-// Referral list (from users)
-app.get('/api/admin/referrals', adminAuth, async (req, res) => {
-  const users = await User.find({}).select('id username referrals referralEarnings');
-  res.json({ referrals: users });
-});
-// --- end added endpoints ---
 
 app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
   const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
