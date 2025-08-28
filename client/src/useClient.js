@@ -21,8 +21,17 @@ export default function useClient() {
 
   // Persist & reuse referral so the bottom "Open" button still carries it
   try {
-    if (ref) localStorage.setItem('ref_keeper', ref)
-    if (!ref) ref = localStorage.getItem('ref_keeper') || null
+    if (ref && ref !== 'undefined' && ref !== 'null') {
+      localStorage.setItem('ref_keeper', ref)
+      console.log('🔗 Referral code stored:', ref)
+    }
+    if (!ref) {
+      const stored = localStorage.getItem('ref_keeper')
+      if (stored && stored !== 'undefined' && stored !== 'null') {
+        ref = stored
+        console.log('🔗 Referral code retrieved from storage:', ref)
+      }
+    }
   } catch {}
 
   // Anonymous id (helps backend tie pre-auth actions)
@@ -39,7 +48,38 @@ export default function useClient() {
     'x-telegram-init-data': (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || ''
   }
   if (anonId) headers['x-anon-id'] = anonId
-  if (ref) headers['x-referrer'] = ref
+  if (ref && ref !== 'undefined' && ref !== 'null') {
+    headers['x-referrer'] = ref
+    console.log('📤 Sending referrer header:', ref)
+  }
 
-  return axios.create({ baseURL: API_BASE, headers, withCredentials: true })
+  // Create axios instance with request interceptor for consistent referral tracking
+  const client = axios.create({ 
+    baseURL: API_BASE, 
+    headers, 
+    withCredentials: true 
+  })
+
+  // Add request interceptor to ensure referral is always sent
+  client.interceptors.request.use((config) => {
+    // Always try to include referrer if we have it
+    const currentRef = localStorage.getItem('ref_keeper')
+    if (currentRef && currentRef !== 'undefined' && currentRef !== 'null' && !config.headers['x-referrer']) {
+      config.headers['x-referrer'] = currentRef
+    }
+    return config
+  })
+
+  // Add response interceptor for debugging
+  client.interceptors.response.use(
+    (response) => response,
+    (error) => {
+      if (error.response?.status === 401) {
+        console.warn('🔒 Auth error - check Telegram init data')
+      }
+      return Promise.reject(error)
+    }
+  )
+
+  return client
 }
