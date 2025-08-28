@@ -26,6 +26,8 @@ app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true }));
 app.disable('x-powered-by');
 app.set('etag', false);
 const noCachePaths = new Set(['/me','/api/me','/tasks','/api/tasks','/referrals','/api/referrals','/withdraw','/api/withdraw','/withdraws','/api/withdraws']);
+app.get('/health', (req,res)=>res.json({status:'ok'}));
+
 app.use((req, res, next) => {
   try {
     const pathOnly = req.path || '';
@@ -708,4 +710,12 @@ if (process.env.SERVE_CLIENT === 'true') {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
+});
+
+
+// global error handler - ensures no hanging requests
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err && err.stack || err);
+  if (res.headersSent) return next(err);
+  res.status(err && err.statusCode ? err.statusCode : 500).json({ error: String(err && err.message) || 'Internal Server Error' });
 });
