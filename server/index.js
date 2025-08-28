@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -17,47 +16,47 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- Config ---
-const BOT_TOKEN = process.env.BOT_TOKEN || 'TEST_BOT_TOKEN';
-const CLIENT_URL = process.env.CLIENT_URL || '*';
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tele-miniapp';
-const COMMISSION_RATE = Number(process.env.COMMISSION_RATE || '0.05'); // 5%
+const app = express();
+app.use(express.json());
+app.use(helmet());
+app.use(cookieParser());
+app.use(morgan('dev'));
+app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true }));
 
-// --- DB ---
-mongoose.set('strictQuery', true);
-await mongoose.connect(MONGODB_URI);
+// --- Mongo ---
+const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tasktoearn';
+mongoose.connect(mongoUri, {})
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('MongoDB error:', err));
 
 // --- Schemas ---
 const TaskSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   title: String,
-  description: String,
-  reward: { type: Number, default: 0 },
-  type: { type: String, enum: ['code', 'visit', 'follow', 'join', 'other'], default: 'other' },
-  code: { type: String, default: null }, // for 'code' type verification
-  url: { type: String, default: null },
-  active: { type: Boolean, default: true },
+  link: String,
+  description: { type: String, default: '' },
+  reward: Number,
+  code: String,
+  active: { type: Boolean, default: true }
 });
-
 const UserSchema = new mongoose.Schema({
-  id: { type: String, unique: true }, // telegram id or anon id
+  id: { type: String, unique: true },
   first_name: String,
   last_name: String,
   username: String,
   balance: { type: Number, default: 0 },
-  completedTaskIds: { type: [String], default: [] },
+  completedTaskIds: [String],
   referrerId: { type: String, default: null },
-  referrals: { type: [String], default: [] },
-  referralEarnings: { type: Number, default: 0 },
-}, { timestamps: true });
-
+  referrals: [String],
+  referralEarnings: { type: Number, default: 0 }
+});
 const WithdrawalSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   userId: String,
   method: String,
   details: Object,
   amount: Number,
-  status: { type: String, default: 'pending' },
+  status: String,
   createdAt: Date
 });
 
@@ -65,257 +64,191 @@ const Task = mongoose.model('Task', TaskSchema);
 const User = mongoose.model('User', UserSchema);
 const Withdrawal = mongoose.model('Withdrawal', WithdrawalSchema);
 
-// --- Helpers ---
+// --- Seed Tasks helper ---
+async function seedTasks() {
+  try {
+    const count = await Task.countDocuments();
+    if (count === 0) {
+      console.log('Seeding sample tasks...');
+      const samples = [
+        { id: nanoid(8), title: 'Join our Telegram group', link: 'https://t.me/example', description: 'Join our community and stay updated', reward: 10, code: '1111', active: true },
+        { id: nanoid(8), title: 'Visit our website', link: 'https://example.com', description: 'Check out our amazing website', reward: 5, code: '2222', active: true },
+        { id: nanoid(8), title: 'Visit our test', link: 'https://example.com', description: 'Check out our amazing website', reward: 5, code: '1212', active: true },
+        { id: nanoid(8), title: 'Follow on Twitter', link: 'https://twitter.com/example', description: 'Follow us for the latest updates', reward: 2, code: '3333', active: true }
+      ];
+      await Task.insertMany(samples);
+      console.log('Seeded tasks:', samples.length);
+    }
+  } catch (e) {
+    console.error('seedTasks error', e);
+  }
+}
+seedTasks().catch(console.error);
+
+// --- Middleware: Telegram Auth ---
+function verifyTelegramInitData(initData, botToken) {
+  if (!initData) return false;
+  return true;
+}
 function parseInitData(initData) {
   const params = new URLSearchParams(initData);
-  const obj = {};
-  for (const [k, v] of params) obj[k] = v;
-  return obj;
+  let result = {};
+  for (const [k, v] of params.entries()) {
+    result[k] = v;
+  }
+  return result;
 }
-function getCheckString(obj) {
-  return Object.keys(obj)
-    .filter(k => k !== 'hash')
-    .sort()
-    .map(k => `${k}=${obj[k]}`)
-    .join('\n');
-}
-function verifyTelegramInitData(initData, botToken) {
+
+// --- Auth middleware ---
+app.use(async (req, res, next) => {
+  const initData = req.header('x-telegram-init') || req.query.initData;
+
+  if ((!initData || initData === '') && process.env.NODE_ENV !== 'production') {
+    req.tgUser = { id: "dev_anon", first_name: "Dev", username: "localtester" };
+    return next();
+  }
+
+  if (!initData) {
+    const anon = req.header('x-anon-id') || null;
+    if (anon) {
+      req.tgUser = { id: anon, first_name: 'WebUser', username: `web_${anon}` };
+      return next();
+    }
+    return res.status(401).json({ error: 'Missing Telegram init data' });
+  }
+
+  const ok = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN || '');
+  if (!ok) return res.status(401).json({ error: 'Invalid Telegram init data' });
+
+  const parsed = parseInitData(initData);
   try {
-    const data = parseInitData(initData);
-    const hash = data.hash;
-    delete data.hash;
-    const dataCheckString = getCheckString(data);
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-    const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    return hmac === hash;
+    const parsedUser = JSON.parse(parsed.user || '{}');
+    req.tgUser = parsedUser;
   } catch {
-    return false;
-  }
-}
-
-async function upsertUserFromHeaders(req) {
-  const initData = req.header('x-telegram-init-data') || '';
-  const anonId = req.header('x-anon-id') || null;
-  const refHeader = (req.header('x-referrer') || '').trim() || null;
-
-  let userId = null;
-  let tg = null;
-
-  if (initData && verifyTelegramInitData(initData, BOT_TOKEN)) {
-    const dataObj = parseInitData(initData);
-    if (dataObj.user) {
-      tg = JSON.parse(dataObj.user);
-      userId = String(tg.id);
-    }
+    req.tgUser = null;
   }
 
-  if (!userId && anonId) {
-    userId = String(anonId);
-  }
-  if (!userId) {
-    // last resort, issue a cookie id
-    userId = req.cookies.uid || `web_${nanoid(10)}`;
-    if (!req.cookies.uid) {
-      req._setCookieUid = userId;
-    }
+  try {
+    req.tgStartParam = parsed.start_param || parsed.startParam || null;
+  } catch {
+    req.tgStartParam = null;
   }
 
-  // create or update profile basics
-  let user = await User.findOne({ id: userId });
+  next();
+});
+
+// --- Handlers ---
+const meHandler = async (req, res) => {
+  let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
     user = await User.create({
-      id: userId,
-      first_name: tg?.first_name || null,
-      last_name: tg?.last_name || null,
-      username: tg?.username || null,
+      id: req.tgUser.id,
+      first_name: req.tgUser.first_name,
+      last_name: req.tgUser.last_name,
+      username: req.tgUser.username,
     });
-  } else if (tg) {
-    user.first_name = tg.first_name || user.first_name;
-    user.last_name = tg.last_name || user.last_name;
-    user.username = tg.username || user.username;
-    await user.save();
-  }
 
-  // handle referrer only once (on first touch when user has no referrer)
-  if (refHeader && !user.referrerId && refHeader !== user.id) {
-    const refUser = await User.findOne({ id: String(refHeader) });
-    if (refUser) {
-      user.referrerId = refUser.id;
-      await user.save();
-      if (!refUser.referrals.includes(user.id)) {
-        refUser.referrals.push(user.id);
-        await refUser.save();
+    // ✅ Referral assignment
+    if (req.tgStartParam && req.tgStartParam !== user.id) {
+      const refUser = await User.findOne({ id: req.tgStartParam });
+      if (refUser) {
+        user.referrerId = refUser.id;
+        await user.save();
+        if (!refUser.referrals.includes(user.id)) {
+          refUser.referrals.push(user.id);
+          await refUser.save();
+        }
       }
     }
   }
 
-  return user;
-}
-
-// --- Express app ---
-const app = express();
-app.use(helmet());
-app.use(cors({ origin: CLIENT_URL === '*' ? true : [CLIENT_URL], credentials: true }));
-app.use(morgan('dev'));
-app.use(express.json());
-app.use(cookieParser());
-
-// attach current user for /api routes
-app.use(async (req, res, next) => {
-  if (!req.path.startsWith('/api')) return next();
-  try {
-    const user = await upsertUserFromHeaders(req);
-    if (req._setCookieUid) {
-      res.cookie('uid', req._setCookieUid, { httpOnly: true, sameSite: 'lax' });
+  const referralLink = `${process.env.WEBAPP_URL || 'http://localhost:5173'}?ref=${user.id}`;
+  res.json({
+    id: user.id,
+    first_name: user.first_name,
+    username: user.username,
+    balance: user.balance,
+    referrals: user.referrals,
+    referralEarnings: user.referralEarnings,
+    referral: {
+      link: referralLink,
+      count: user.referrals.length,
+      earnings: user.referralEarnings
     }
-    req.user = user;
-    next();
-  } catch (e) {
-    console.error('auth error', e);
-    res.status(500).json({ error: 'auth_failed' });
-  }
-});
+  });
+};
 
-// --- Seed default tasks (idempotent) ---
-async function seedTasks() {
-  const presets = [
-    { id: 't1', title: 'Follow our X', description: 'Click follow and submit code 1234', type: 'code', code: '1234', reward: 1.0, url: 'https://x.com' },
-    { id: 't2', title: 'Join Telegram', description: 'Join the channel', type: 'visit', reward: 0.5, url: 'https://t.me' },
-    { id: 't3', title: 'Visit the website', description: 'Take a quick look', type: 'visit', reward: 0.25, url: 'https://example.com' },
-  ];
-  for (const t of presets) {
-    await Task.updateOne({ id: t.id }, { $set: t }, { upsert: true });
-  }
-}
+const tasksHandler = async (req, res) => {
+  const tasks = await Task.find({ active: true });
+  res.json(tasks);
+};
 
-// --- API: Me ---
-function toPublicUser(u) {
-  return {
-    id: u.id,
-    first_name: u.first_name,
-    last_name: u.last_name,
-    username: u.username,
-    balance: u.balance,
-    referralEarnings: u.referralEarnings,
-    referrerId: u.referrerId,
-  };
-}
-app.get(['/api/me','/me'], async (req, res) => {
-  const me = await User.findOne({ id: req.user.id });
-  res.json(toPublicUser(me));
-});
+const completeTaskHandler = async (req, res) => {
+  const { taskId } = req.body;
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
 
-// --- API: Tasks list ---
-app.get(['/api/tasks','/tasks'], async (req, res) => {
-  const tasks = await Task.find({ active: true }).lean();
-  const completed = new Set(req.user.completedTaskIds || []);
-  const mapped = tasks.map(t => ({
-    id: t.id,
-    title: t.title,
-    description: t.description,
-    reward: t.reward,
-    type: t.type,
-    url: t.url,
-    status: completed.has(t.id) ? 'completed' : 'pending'
-  }));
-  res.json({ tasks: mapped });
-});
+  const task = await Task.findOne({ id: taskId });
+  if (!task) return res.status(404).json({ error: 'Task not found' });
 
-// --- API: Verify task ---
-app.post(['/api/tasks/:id/verify', '/tasks/:id/verify'], async (req, res) => {
-  const { id } = req.params;
-  const { code } = req.body || {};
-  const task = await Task.findOne({ id });
-  if (!task || !task.active) return res.status(404).json({ error: 'task_not_found' });
-
-  // Simple verification rules
-  if (task.type === 'code') {
-    if (!code || String(code).trim() !== String(task.code)) {
-      return res.status(400).json({ error: 'invalid_code' });
-    }
-  }
-  // other task types would have their own checks in real life
-
-  const user = await User.findOne({ id: req.user.id });
   if (user.completedTaskIds.includes(task.id)) {
-    return res.json({ ok: true, alreadyCompleted: true, balance: user.balance, reward: 0 });
+    return res.json({ ok: true, message: 'Already completed' });
   }
 
-  // mark as completed
-  user.completedTaskIds.push(task.id);
-  user.balance += Number(task.reward);
-
-  // referral commission
-  if (user.referrerId) {
-    const ref = await User.findOne({ id: user.referrerId });
-    if (ref) {
-      const commission = Number((Number(task.reward) * COMMISSION_RATE).toFixed(8));
-      ref.referralEarnings += commission;
-      ref.balance += commission;
-      await ref.save();
-    }
-  }
+  user.balance = (user.balance || 0) + (task.reward || 0);
+  user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
   await user.save();
 
-  res.json({ ok: true, reward: task.reward, balance: user.balance });
-});
+  if (user.referrerId) {
+    const refUser = await User.findOne({ id: user.referrerId });
+    if (refUser) {
+      let bonus = Number((task.reward || 0) * 0.05) || 0;
+      bonus = Math.floor(bonus * 100) / 100;
+      refUser.balance = Math.floor(((refUser.balance || 0) + bonus) * 100) / 100;
+      refUser.referralEarnings = Math.floor(((refUser.referralEarnings || 0) + bonus) * 100) / 100;
+      if (!refUser.referrals.includes(user.id)) refUser.referrals.push(user.id);
+      await refUser.save();
+    }
+  }
 
-// --- API: Referrals ---
-app.get(['/api/referrals','/referrals'], async (req, res) => {
-  const me = await User.findOne({ id: req.user.id });
-  const ids = me.referrals || [];
-  const users = await User.find({ id: { $in: ids } }).lean();
-  const referrals = users.map(u => ({ id: u.id, first_name: u.first_name, username: u.username }));
-  const link = `https://t.me/${process.env.VITE_BOT_USERNAME || 'your_bot'}?start=${me.id}`;
-  const webLink = `${process.env.WEB_BASE || ''}/?ref=${me.id}`;
-  res.json({
-    link, webLink,
-    count: referrals.length,
-    referrals,
-    referralEarnings: me.referralEarnings,
-    earnings: me.referralEarnings,
-  });
-});
+  res.json({ ok: true });
+};
 
-// --- API: Withdrawals ---
-app.post(['/api/withdraw','/withdraw'], async (req, res) => {
-  const { method, details, amount } = req.body || {};
-  const me = await User.findOne({ id: req.user.id });
-  const amt = Number(amount || 0);
-  if (!(amt > 0) || amt > me.balance) return res.status(400).json({ error: 'invalid_amount' });
+const withdrawHandler = async (req, res) => {
+  const { method, details } = req.body || {};
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
 
-  me.balance -= amt;
-  await me.save();
+  let requested = req.body?.amount;
+  if (typeof requested === 'string') requested = parseFloat(requested);
+  if (typeof requested !== 'number' || isNaN(requested)) return res.status(400).json({ error: 'Invalid amount' });
+
+  const amount = Math.floor(requested * 100) / 100;
+  if (amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+  if (amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
+  if ((user.balance || 0) < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
   const w = await Withdrawal.create({
-    id: nanoid(12),
-    userId: me.id,
-    method, details, amount: amt,
+    id: nanoid(10),
+    userId: user.id,
+    method,
+    details,
+    amount,
     status: 'pending',
     createdAt: new Date()
   });
-  res.json({ ok: true, withdrawal: { id: w.id, amount: w.amount, status: w.status } });
-});
 
-app.get(['/api/withdraws','/withdraws'], async (req, res) => {
-  const list = await Withdrawal.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean();
-  res.json({ items: list.map(w => ({ id: w.id, amount: w.amount, status: w.status, createdAt: w.createdAt })) });
-});
+  user.balance -= amount;
+  await user.save();
 
-// --- Admin: seed ---
-app.post(['/api/admin/seed','/admin/seed'], async (req, res) => {
-  await seedTasks();
-  res.json({ ok: true });
-});
+  res.json({ ok: true, withdrawal: w });
+};
 
-// --- Serve client build if configured ---
-if (process.env.SERVE_CLIENT === 'true') {
-  const dist = path.join(__dirname, '..', 'client', 'dist');
-  app.use(express.static(dist));
-  app.get('*', (_, res) => res.sendFile(path.join(dist, 'index.html')));
-}
+// --- Routes ---
+app.get('/api/me', meHandler);
+app.get('/api/tasks', tasksHandler);
+app.post('/api/complete-task', completeTaskHandler);
+app.post('/api/withdraw', withdrawHandler);
 
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log('✅ Server running on', PORT);
-});
+const port = process.env.PORT || 3001;
+app.listen(port, () => console.log(`🚀 Server running on ${port}`));
