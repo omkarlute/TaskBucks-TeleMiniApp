@@ -6,7 +6,7 @@ import { toast } from 'react-hot-toast'
 export default function ReferralView({ me, referral }) {
   const anon = (typeof window !== 'undefined' && localStorage.getItem('anonId')) || ''
   const myId = me?.id || anon || ''
-  const shareUrl = referral?.link || referral?.webLink || (typeof window !== 'undefined' ? `${window.location.origin}/?ref=${myId}` : '')
+  const shareUrl = referral?.link || referral?.webLink || `${window.location.origin}/?ref=${myId}`
   const text = `Earn with me! Get paid for tasks. Use my link: ${shareUrl}`
   const shareHref = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(text)}`
 
@@ -15,7 +15,7 @@ export default function ReferralView({ me, referral }) {
       await navigator.clipboard.writeText(shareUrl)
       toast.success('Referral link copied!')
     } catch {
-      toast.error('Failed to copy')
+      toast.error('Unable to copy link')
     }
   }
 
@@ -35,22 +35,11 @@ export default function ReferralView({ me, referral }) {
         </div>
       </div>
 
-      <div className="mt-4 bg-white/5 rounded-xl p-3">
-        <div className="text-subtle text-xs">Your referral link</div>
-        <div className="text-sm break-all">{shareUrl}</div>
-      </div>
-
-      <div className="mt-4 flex items-center gap-3">
-        <Users size={16} />
-        <div className="text-sm">Total Referrals: <span className="font-semibold">{referral?.count ?? 0}</span></div>
-        <div className="text-sm ml-auto">Earnings: <span className="font-semibold">${(referral?.referralEarnings ?? 0).toFixed(2)}</span></div>
-      </div>
-
       {referral?.referrals?.length ? (
         <ul className="mt-3 space-y-2">
           {referral.referrals.map(u => (
             <li key={u.id} className="text-sm border-t border-white/5 pt-2">
-              <div className="font-medium">{u.first_name || u.username || u.id}</div>
+              <div className="font-medium">{u.first_name || u.username}</div>
               <div className="text-subtle text-xs">ID: {u.id}</div>
             </li>
           ))}
