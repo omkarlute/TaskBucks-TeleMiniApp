@@ -48,12 +48,14 @@ export default function App() {
 
   const { data: tasksData, isLoading: tasksLoading } = useQuery({
     queryKey: ['tasks'],
-    queryFn: async () => (await api.get('/tasks')).data
+    queryFn: async () => (await api.get('/tasks')).data,
+    enabled: !!me && !meLoading
   })
 
   const { data: refs, isLoading: refLoading } = useQuery({
     queryKey: ['referrals'],
-    queryFn: async () => (await api.get('/referrals')).data
+    queryFn: async () => (await api.get('/referrals')).data,
+    enabled: !!me && !meLoading
   })
 
   const verify = useMutation({

@@ -1,81 +1,45 @@
-
 import axios from 'axios'
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
-// parse Telegram initData string like "key1=val1&key2=val2"
-function parseInitDataString(initData) {
-  if (!initData || typeof initData !== 'string') return {}
-  const pairs = initData.split('&')
-  const out = {}
-  for (const p of pairs) {
-    const [k, v] = p.split('=')
-    if (!k) continue
-    out[k] = decodeURIComponent(v || '')
-  }
-  return out
-}
-
 export default function useClient() {
   let ref = null
+
+  // Read referrer from multiple sources (cover all Telegram entry points)
   try {
-    const url = new URL(typeof window !== 'undefined' ? window.location.href : 'http://localhost/')
-    ref = url.searchParams.get('ref') || null
+    const url = new URL(window.location.href)
+    ref = url.searchParams.get('ref') || url.searchParams.get('referrer') || null
 
-    // also support Telegram startapp param (base64 json or raw)
-    const sp = url.searchParams.get('tgWebAppStartParam')
-    if (!ref && sp) {
-      try {
-        const decoded = atob(sp)
-        const obj = JSON.parse(decoded)
-        ref = obj.ref || obj.referredBy || obj.u || null
-      } catch {
-        ref = sp
-      }
-    }
+    // Telegram appends deep-link start parameter in different ways:
+    const tgStartParam = url.searchParams.get('tgWebAppStartParam')
+    if (!ref && tgStartParam) ref = tgStartParam
 
-    const init = (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || ''
-    if (!ref && init) {
-      const parsed = parseInitDataString(init)
-      if (parsed.start_param) {
-        try {
-          const decoded = atob(parsed.start_param)
-          const obj = JSON.parse(decoded)
-          ref = obj.ref || obj.referredBy || obj.u || null
-        } catch {
-          ref = parsed.start_param
-        }
-      }
-    }
-    if (ref === '' || ref === 'null' || ref === 'undefined') ref = null
+    // From SDK (more reliable inside Telegram)
+    const sdkRef = window?.Telegram?.WebApp?.initDataUnsafe?.start_param
+    if (!ref && sdkRef) ref = sdkRef
+
   } catch {}
 
-  let anonId = ''
+  // Persist & reuse referral so the bottom "Open" button still carries it
   try {
-    anonId = (typeof window !== 'undefined' && localStorage.getItem('anonId')) || ''
+    if (ref) localStorage.setItem('ref_keeper', ref)
+    if (!ref) ref = localStorage.getItem('ref_keeper') || null
+  } catch {}
+
+  // Anonymous id (helps backend tie pre-auth actions)
+  let anonId = null
+  try {
+    anonId = localStorage.getItem('anonId')
     if (!anonId) {
       anonId = 'web_' + Math.random().toString(36).slice(2, 10)
       localStorage.setItem('anonId', anonId)
     }
   } catch {}
 
-  const adminSecret = (typeof window !== 'undefined' && localStorage.getItem('adminSecret')) || ''
-
   const headers = {
-    'x-telegram-init-data': (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || '',
-    'x-anon-id': anonId,
-    'Cache-Control': 'no-cache',
-    'x-admin-secret': adminSecret
+    'x-telegram-init-data': (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || ''
   }
+  if (anonId) headers['x-anon-id'] = anonId
   if (ref) headers['x-referrer'] = ref
 
-  const client = axios.create({ baseURL: API_BASE, headers })
-
-  // Also propagate x-referrer on every request if we have it
-  client.interceptors.request.use(config => {
-    config.headers = config.headers || {}
-    if (ref && !config.headers['x-referrer']) config.headers['x-referrer'] = ref
-    return config
-  })
-
-  return client
+  return axios.create({ baseURL: API_BASE, headers, withCredentials: true })
 }
