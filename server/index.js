@@ -22,6 +22,23 @@ app.use(helmet());
 app.use(cookieParser());
 app.use(morgan('dev'));
 app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true }));
+// Disable ETag/HTTP caching for dynamic API responses
+app.disable('x-powered-by');
+app.set('etag', false);
+const noCachePaths = new Set(['/me','/api/me','/tasks','/api/tasks','/referrals','/api/referrals','/withdraw','/api/withdraw','/withdraws','/api/withdraws']);
+app.use((req, res, next) => {
+  try {
+    const pathOnly = req.path || '';
+    if (pathOnly.startsWith('/api') || noCachePaths.has(pathOnly)) {
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      res.set('Surrogate-Control', 'no-store');
+    }
+  } catch {}
+  next();
+});
+
 
 // --- Mongo ---
 const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tasktoearn';
@@ -485,7 +502,8 @@ const referralsHandler = async (req, res) => {
   }
   
   const botUsername = process.env.TELEGRAM_BOT_USERNAME || process.env.VITE_BOT_USERNAME || 'Taskbucksbot';
-  const botLink = `https://t.me/${botUsername}?start=${user.id}`;
+  const payload = Buffer.from(JSON.stringify({ ref: user.id })).toString('base64');
+  const botLink = `https://t.me/${botUsername}?startapp=${encodeURIComponent(payload)}`;
   const webLink = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}/?ref=${user.id}`;
   
   console.log(`📊 Referrals for ${user.id}: ${allRefs.length} referrals, earnings: $${user.referralEarnings || 0}`);
