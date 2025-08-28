@@ -48,7 +48,8 @@ const UserSchema = new mongoose.Schema({
   completedTaskIds: [String],
   referrerId: { type: String, default: null },
   referrals: [String],
-  referralEarnings: { type: Number, default: 0 }
+  referralEarnings: { type: Number, default: 0 },
+  referralRewardsPaidFor: [String]
 });
 const WithdrawalSchema = new mongoose.Schema({
   id: { type: String, unique: true },
@@ -114,92 +115,107 @@ function verifyTelegramInitData(initData, botToken) {
   }
 }
 
-// --- Enhanced referral helper function ---
-
-async function ensureReferralTracking(req) {
+// --- Helper to find or create user ---
+async function findOrCreateUser(tgUser, referrerId = null) {
   try {
-    let rawRef = req.header('x-referrer') || req.query.ref || req.tgStartParam || null;
-    if (!rawRef || !req.tgUser) return null;
-
-    let ref = String(rawRef || '').trim();
-    if (!ref || ref === '' || ref === req.tgUser.id) return null;
-
-    // If it's a URL or contains query params, try to extract common keys (ref, start, start_param)
-    try {
-      if (ref.includes('://') || ref.includes('http') || ref.includes('?')) {
-        try {
-          const u = new URL(ref.includes('http') ? ref : (ref.startsWith('/') ? (req.protocol + '://' + req.get('host') + ref) : ('https://' + ref)));
-          ref = u.searchParams.get('ref') || u.searchParams.get('start') || u.searchParams.get('start_param') || ref;
-        } catch (e) {
-          // try parsing as query string
-          try {
-            const sp = new URLSearchParams(ref);
-            ref = sp.get('ref') || sp.get('start') || sp.get('start_param') || ref;
-          } catch (err) {}
-        }
-      }
-    } catch(e) {}
-
-    // Normalize common telegram forms: tg://user?id=12345 and @username
-    ref = ref.replace(/^tg:\/\/user\?id=/i, '').replace(/^@/, '').replace(/\/+$/, '').trim();
-
-    // Try to find a user by id first, then username
-    let refUser = await User.findOne({ id: ref });
-    if (!refUser) {
-      refUser = await User.findOne({ username: ref });
-    }
-
-    // If still not found, maybe ref is a base64 payload containing JSON with a ref field
-    if (!refUser) {
-      try {
-        const decoded = Buffer.from(ref, 'base64').toString('utf-8');
-        const parsed = JSON.parse(decoded);
-        if (parsed && (parsed.ref || parsed.referredBy || parsed.u)) {
-          const candidate = parsed.ref || parsed.referredBy || parsed.u;
-          refUser = await User.findOne({ id: candidate }) || await User.findOne({ username: String(candidate).replace(/^@/,'') });
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
-
-    if (!refUser) {
-      console.log(`⚠️ Referrer not found for ref="${rawRef}" normalized="${ref}"`);
-      return null;
-    }
-
-    // Ensure the current user exists
-    let user = await User.findOne({ id: req.tgUser.id });
+    // Try to find existing user first
+    let user = await User.findOne({ id: tgUser.id });
+    
     if (!user) {
-      user = await User.create({
-        id: req.tgUser.id,
-        first_name: req.tgUser.first_name,
-        username: req.tgUser.username,
-        referrerId: refUser.id
-      });
+      // Create new user with referrer if provided
+      const userData = {
+        id: tgUser.id,
+        first_name: tgUser.first_name || '',
+        last_name: tgUser.last_name || '',
+        username: tgUser.username || '',
+        balance: 0,
+        completedTaskIds: [],
+        referrals: [],
+        referralEarnings: 0,
+        referralRewardsPaidFor: []
+      };
+
+      // Set referrer if provided and valid
+      if (referrerId && referrerId !== tgUser.id) {
+        const referrer = await User.findOne({ id: referrerId });
+        if (referrer) {
+          userData.referrerId = referrerId;
+          console.log(`✅ New user ${tgUser.id} will be referred by ${referrerId}`);
+        }
+      }
+
+      user = await User.create(userData);
+
+      // Add to referrer's referrals array
+      if (user.referrerId) {
+        await User.updateOne(
+          { id: user.referrerId },
+          { $addToSet: { referrals: user.id } }
+        );
+        console.log(`✅ Added ${user.id} to referrer ${user.referrerId}'s referrals`);
+      }
     } else {
-      // Only set referrer if not already present and not self
-      if ((!user.referrerId || user.referrerId === null) && user.id !== refUser.id) {
-        user.referrerId = refUser.id;
+      // Update existing user info but don't change referrer
+      let updated = false;
+      if (user.first_name !== tgUser.first_name) {
+        user.first_name = tgUser.first_name || user.first_name;
+        updated = true;
+      }
+      if (user.username !== tgUser.username) {
+        user.username = tgUser.username || user.username;
+        updated = true;
+      }
+      if (updated) {
         await user.save();
       }
     }
 
-    // Ensure referrer's referrals array contains this user
-    if (!Array.isArray(refUser.referrals)) refUser.referrals = [];
-    if (!refUser.referrals.includes(user.id) && user.id !== refUser.id) {
-      refUser.referrals.push(user.id);
-      await refUser.save();
-    }
-
-    console.log(`✅ Referral established: ${user.id} referred by ${refUser.id}`);
     return user;
   } catch (error) {
-    console.error('Error in ensureReferralTracking:', error);
-    return null;
+    if (error.code === 11000) {
+      // Duplicate key error, try to find the existing user
+      return await User.findOne({ id: tgUser.id });
+    }
+    throw error;
   }
 }
 
+// --- Extract referrer from request ---
+function extractReferrerId(req) {
+  // Check multiple sources for referrer
+  let referrerId = null;
+  
+  // 1. Check start_param (from Telegram deep links)
+  if (req.tgStartParam) {
+    referrerId = req.tgStartParam;
+    console.log(`📱 Referrer from start_param: ${referrerId}`);
+  }
+  
+  // 2. Check x-referrer header
+  if (!referrerId && req.header('x-referrer')) {
+    referrerId = req.header('x-referrer');
+    console.log(`🌐 Referrer from header: ${referrerId}`);
+  }
+  
+  // 3. Check query parameter
+  if (!referrerId && req.query.ref) {
+    referrerId = req.query.ref;
+    console.log(`🔗 Referrer from query: ${referrerId}`);
+  }
+
+  if (referrerId) {
+    // Clean and validate referrer ID
+    referrerId = String(referrerId).trim().replace(/^@/, '');
+    
+    // Don't allow self-referral
+    if (referrerId === req.tgUser?.id) {
+      console.log(`⚠️ Self-referral blocked for user ${req.tgUser.id}`);
+      return null;
+    }
+  }
+
+  return referrerId;
+}
 
 // --- API Auth Middleware ---
 async function telegramAuth(req, res, next) {
@@ -237,6 +253,9 @@ async function telegramAuth(req, res, next) {
   // Expose start_param (for referrals via deep links)
   try {
     req.tgStartParam = parsed.start_param || parsed.startParam || null;
+    if (req.tgStartParam) {
+      console.log(`📱 Detected start_param: ${req.tgStartParam} for user ${req.tgUser?.id}`);
+    }
   } catch {
     req.tgStartParam = null;
   }
@@ -288,211 +307,217 @@ function adminAuth(req, res, next) {
 
 // --- API Routes ---
 const meHandler = async (req, res) => {
-  let user = await ensureReferralTracking(req);
-  if (!user) {
-    user = await User.findOne({ id: req.tgUser.id });
-    if (!user) {
-      user = await User.create({
-        id: req.tgUser.id,
-        first_name: req.tgUser.first_name,
-        username: req.tgUser.username
-      });
-    }
+  try {
+    const referrerId = extractReferrerId(req);
+    const user = await findOrCreateUser(req.tgUser, referrerId);
+    res.json({ user });
+  } catch (error) {
+    console.error('Error in meHandler:', error);
+    res.status(500).json({ error: 'Server error' });
   }
-  res.json({ user });
 };
 
 const tasksHandler = async (req, res) => {
-  let user = await ensureReferralTracking(req);
-  if (!user) {
-    user = await User.findOne({ id: req.tgUser.id });
-    if (!user) {
-      user = await User.create({
-        id: req.tgUser.id,
-        first_name: req.tgUser.first_name,
-        username: req.tgUser.username
-      });
-    }
+  try {
+    const referrerId = extractReferrerId(req);
+    const user = await findOrCreateUser(req.tgUser, referrerId);
+    
+    const tasks = await Task.find({ active: true });
+    const transformedTasks = tasks.map(task => ({
+      id: task.id,
+      title: task.title,
+      url: task.link,
+      description: task.description || `Complete this task to earn $${task.reward}`,
+      reward: task.reward,
+      code: task.code,
+      active: task.active,
+      status: (user.completedTaskIds || []).includes(task.id) ? 'completed' : 'pending'
+    }));
+    res.json({ tasks: transformedTasks });
+  } catch (error) {
+    console.error('Error in tasksHandler:', error);
+    res.status(500).json({ error: 'Server error' });
   }
-  
-  const tasks = await Task.find({ active: true });
-  const transformedTasks = tasks.map(task => ({
-    id: task.id,
-    title: task.title,
-    url: task.link,
-    description: task.description || `Complete this task to earn $${task.reward}`,
-    reward: task.reward,
-    code: task.code,
-    active: task.active,
-    status: (user.completedTaskIds || []).includes(task.id) ? 'completed' : 'pending'
-  }));
-  res.json({ tasks: transformedTasks });
 };
 
 const taskVerifyHandler = async (req, res) => {
   const taskId = req.params.id;
   const { code } = req.body || {};
   
-  const task = await Task.findOne({ id: taskId, active: true });
-  if (!task) return res.status(404).json({ error: 'Task not found' });
-  if (!code || String(code).trim() !== String(task.code).trim()) return res.status(400).json({ error: 'Incorrect code' });
-
-  // Ensure referral tracking is established before task completion
-  let user = await ensureReferralTracking(req);
-  if (!user) {
-    user = await User.findOne({ id: req.tgUser.id });
-  }
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  
-  if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
-    return res.status(400).json({ error: 'Task already completed' });
-  }
-
-  
-  // Use a mongoose transaction to atomically update user and referrer
-  const session = await mongoose.startSession();
-  session.startTransaction();
   try {
-    // Reload user within session
-    user = await User.findOne({ id: req.tgUser.id }).session(session);
-    if (!user) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(404).json({ error: 'User not found' });
+    const task = await Task.findOne({ id: taskId, active: true });
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!code || String(code).trim() !== String(task.code).trim()) {
+      return res.status(400).json({ error: 'Incorrect code' });
     }
+
+    // Get user
+    const referrerId = extractReferrerId(req);
+    let user = await findOrCreateUser(req.tgUser, referrerId);
+    
     if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
-      await session.abortTransaction();
-      session.endSession();
       return res.status(400).json({ error: 'Task already completed' });
     }
 
-    // Add reward to user
-    user.balance = (user.balance || 0) + (task.reward || 0);
-    user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
-    await user.save({ session });
-
-    // Process referral bonus
-    if (user.referrerId) {
-      const refUser = await User.findOne({ id: user.referrerId }).session(session);
-      if (refUser) {
-        let bonus = Number((task.reward || 0) * 0.05) || 0;
-        bonus = Math.floor(bonus * 100) / 100;
-
-        // ensure idempotency: track paid bonuses per task on referred user
-        user.referralRewardsPaidFor = user.referralRewardsPaidFor || [];
-        if (!user.referralRewardsPaidFor.includes(task.id)) {
-          // credit referrer
-          refUser.balance = Math.floor(((refUser.balance || 0) + bonus) * 100) / 100;
-          refUser.referralEarnings = Math.floor(((refUser.referralEarnings || 0) + bonus) * 100) / 100;
-
-          // Double-check referrals array
-          refUser.referrals = refUser.referrals || [];
-          if (!refUser.referrals.includes(user.id)) {
-            refUser.referrals.push(user.id);
-          }
-
-          // persist referrer
-          await refUser.save({ session });
-
-          // mark as paid on user
-          user.referralRewardsPaidFor.push(task.id);
-          await user.save({ session });
-
-          console.log(`✅ Referral bonus: ${refUser.id} earned $${bonus} from ${user.id} completing task ${task.id}`);
-        } else {
-          console.log(`ℹ️ Referral bonus already paid for user ${user.id} task ${task.id}`);
-        }
-      } else {
-        console.warn(`⚠️ Referrer not found for user ${user.id}, referrerId: ${user.referrerId}`);
+    // Use transaction for atomic updates
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    
+    try {
+      // Reload user within transaction
+      user = await User.findOne({ id: req.tgUser.id }).session(session);
+      if (!user) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ error: 'User not found' });
       }
-    }
 
-    await session.commitTransaction();
-    session.endSession();
-    return res.json({ ok: true });
-  } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error('❌ Error processing task completion/referral:', err);
-    return res.status(500).json({ error: 'Server error processing task' });
+      // Double-check task completion
+      if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: 'Task already completed' });
+      }
+
+      // Add reward to user
+      user.balance = (user.balance || 0) + (task.reward || 0);
+      user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
+      await user.save({ session });
+
+      // Process referral bonus
+      if (user.referrerId) {
+        const refUser = await User.findOne({ id: user.referrerId }).session(session);
+        if (refUser) {
+          // Check if bonus already paid
+          user.referralRewardsPaidFor = user.referralRewardsPaidFor || [];
+          if (!user.referralRewardsPaidFor.includes(task.id)) {
+            const bonus = Math.floor((task.reward || 0) * 0.05 * 100) / 100;
+            
+            // Credit referrer
+            refUser.balance = Math.floor(((refUser.balance || 0) + bonus) * 100) / 100;
+            refUser.referralEarnings = Math.floor(((refUser.referralEarnings || 0) + bonus) * 100) / 100;
+
+            // Ensure user is in referrer's referrals array
+            refUser.referrals = refUser.referrals || [];
+            if (!refUser.referrals.includes(user.id)) {
+              refUser.referrals.push(user.id);
+            }
+
+            await refUser.save({ session });
+
+            // Mark as paid
+            user.referralRewardsPaidFor.push(task.id);
+            await user.save({ session });
+
+            console.log(`✅ Referral bonus: ${refUser.id} earned $${bonus} from ${user.id} completing task ${task.id}`);
+          }
+        }
+      }
+
+      await session.commitTransaction();
+      session.endSession();
+      
+      res.json({ ok: true });
+    } catch (err) {
+      await session.abortTransaction();
+      session.endSession();
+      throw err;
+    }
+  } catch (error) {
+    console.error('❌ Error in taskVerifyHandler:', error);
+    res.status(500).json({ error: 'Server error processing task' });
   }
-res.json({ ok: true });
 };
 
 const withdrawHandler = async (req, res) => {
-  const { method, details } = req.body || {};
-  let user = await User.findOne({ id: req.tgUser.id });
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  try {
+    const { method, details } = req.body || {};
+    let user = await User.findOne({ id: req.tgUser.id });
+    if (!user) return res.status(404).json({ error: 'User not found' });
 
-  let requested = req.body?.amount;
-  if (typeof requested === 'string') requested = parseFloat(requested);
-  if (typeof requested !== 'number' || isNaN(requested)) return res.status(400).json({ error: 'Invalid amount' });
+    let requested = req.body?.amount;
+    if (typeof requested === 'string') requested = parseFloat(requested);
+    if (typeof requested !== 'number' || isNaN(requested)) return res.status(400).json({ error: 'Invalid amount' });
 
-  const amount = Math.floor(requested * 100) / 100;
-  if (amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
-  if (amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
-  if ((user.balance || 0) < amount) return res.status(400).json({ error: 'Insufficient balance' });
+    const amount = Math.floor(requested * 100) / 100;
+    if (amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+    if (amount < 5) return res.status(400).json({ error: 'Min $5 to withdraw' });
+    if ((user.balance || 0) < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
-  const w = await Withdrawal.create({
-    id: nanoid(12),
-    userId: user.id,
-    method: method || 'manual',
-    details: details || { address: req.body?.address || '' },
-    amount,
-    status: 'pending',
-    createdAt: new Date()
-  });
+    const w = await Withdrawal.create({
+      id: nanoid(12),
+      userId: user.id,
+      method: method || 'manual',
+      details: details || { address: req.body?.address || '' },
+      amount,
+      status: 'pending',
+      createdAt: new Date()
+    });
 
-  user.balance = Math.floor(((user.balance || 0) - amount) * 100) / 100;
-  await user.save();
-  res.json({ ok: true, withdraw: w });
+    user.balance = Math.floor(((user.balance || 0) - amount) * 100) / 100;
+    await user.save();
+    res.json({ ok: true, withdraw: w });
+  } catch (error) {
+    console.error('Error in withdrawHandler:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 };
 
 const withdrawsHandler = async (req, res) => {
-  const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
-  res.json({ withdraws: list });
+  try {
+    const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
+    res.json({ withdraws: list });
+  } catch (error) {
+    console.error('Error in withdrawsHandler:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
 };
 
 const referralsHandler = async (req, res) => {
-  const user = await User.findOne({ id: req.tgUser.id });
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  
-  // Get all users who have this user as their referrer
-  const referredUsers = await User.find({ referrerId: user.id }).select('id first_name username');
-  
-  // Also check the referrals array (for backward compatibility)
-  const referralIds = user.referrals || [];
-  const referralsFromArray = await User.find({ id: { $in: referralIds } }).select('id first_name username');
-  
-  // Merge and deduplicate
-  const allRefs = [...referredUsers];
-  referralsFromArray.forEach(ref => {
-    if (!allRefs.find(r => r.id === ref.id)) {
-      allRefs.push(ref);
+  try {
+    const user = await User.findOne({ id: req.tgUser.id });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    
+    // Get all users who have this user as their referrer
+    const referredUsers = await User.find({ referrerId: user.id }).select('id first_name username');
+    
+    // Also check the referrals array (for backward compatibility)
+    const referralIds = user.referrals || [];
+    const referralsFromArray = await User.find({ id: { $in: referralIds } }).select('id first_name username');
+    
+    // Merge and deduplicate
+    const allRefs = [...referredUsers];
+    referralsFromArray.forEach(ref => {
+      if (!allRefs.find(r => r.id === ref.id)) {
+        allRefs.push(ref);
+      }
+    });
+    
+    // Update user's referrals array if needed
+    const currentRefIds = allRefs.map(r => r.id);
+    if (JSON.stringify(currentRefIds.sort()) !== JSON.stringify((user.referrals || []).sort())) {
+      user.referrals = currentRefIds;
+      await user.save();
     }
-  });
-  
-  // Update user's referrals array if needed
-  const currentRefIds = allRefs.map(r => r.id);
-  if (JSON.stringify(currentRefIds.sort()) !== JSON.stringify((user.referrals || []).sort())) {
-    user.referrals = currentRefIds;
-    await user.save();
+    
+    const botUsername = process.env.TELEGRAM_BOT_USERNAME || process.env.VITE_BOT_USERNAME || 'Taskbucksbot';
+    const botLink = `https://t.me/${botUsername}?start=${user.id}`;
+    const webLink = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}/?ref=${user.id}`;
+    
+    console.log(`📊 Referrals for ${user.id}: ${allRefs.length} referrals, earnings: $${user.referralEarnings || 0}`);
+    
+    res.json({
+      link: botLink,
+      webLink,
+      referrals: allRefs,
+      count: allRefs.length,
+      referralEarnings: user.referralEarnings || 0,
+      earnings: user.referralEarnings || 0
+    });
+  } catch (error) {
+    console.error('Error in referralsHandler:', error);
+    res.status(500).json({ error: 'Server error' });
   }
-  
-  const botUsername = process.env.TELEGRAM_BOT_USERNAME || process.env.VITE_BOT_USERNAME || 'Taskbucksbot';
-  const botLink = `https://t.me/${botUsername}?start=${user.id}`;
-  const webLink = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}/?ref=${user.id}`;
-  
-  console.log(`📊 Referrals for ${user.id}: ${allRefs.length} referrals, earnings: $${user.referralEarnings || 0}`);
-  
-  res.json({
-    link: botLink,
-    webLink,
-    referrals: allRefs,
-    count: allRefs.length,
-    referralEarnings: user.referralEarnings || 0,
-    earnings: user.referralEarnings || 0
-  });
 };
 
 // Apply routes
@@ -593,53 +618,6 @@ app.post('/api/admin/fix-referrals', adminAuth, async (req, res) => {
         // Clear invalid referrer
         user.referrerId = null;
         await user.save();
-      }
-    }
-    
-    // Recalculate referral earnings for all users
-    const referrers = await User.find({ 
-      $or: [
-        { referrals: { $ne: [] } },
-        { referralEarnings: { $gt: 0 } }
-      ]
-    });
-    
-    for (const referrer of referrers) {
-      let totalEarnings = 0;
-      
-      // Get all referred users
-      const referredUsers = await User.find({ referrerId: referrer.id });
-      
-      for (const referredUser of referredUsers) {
-        if (referredUser.completedTaskIds) {
-          for (const taskId of referredUser.completedTaskIds) {
-            const task = await Task.findOne({ id: taskId });
-            if (task) {
-              totalEarnings += (task.reward || 0) * 0.05;
-            }
-          }
-        }
-      }
-      
-      totalEarnings = Math.floor(totalEarnings * 100) / 100;
-      
-      // Update if different
-      if (Math.abs((referrer.referralEarnings || 0) - totalEarnings) > 0.01) {
-        console.log(`🔧 Fixing referral earnings for ${referrer.id}: ${referrer.referralEarnings || 0} -> ${totalEarnings}`);
-        
-        // Add difference to balance too
-        const earningsDiff = totalEarnings - (referrer.referralEarnings || 0);
-        referrer.balance = Math.floor(((referrer.balance || 0) + earningsDiff) * 100) / 100;
-        referrer.referralEarnings = totalEarnings;
-        await referrer.save();
-      }
-      
-      // Sync referrals array
-      const currentReferredIds = referredUsers.map(u => u.id);
-      if (JSON.stringify(currentReferredIds.sort()) !== JSON.stringify((referrer.referrals || []).sort())) {
-        referrer.referrals = currentReferredIds;
-        await referrer.save();
-        console.log(`🔧 Synced referrals array for ${referrer.id}`);
       }
     }
     
