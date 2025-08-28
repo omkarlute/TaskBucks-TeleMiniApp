@@ -1,72 +1,86 @@
+
 import axios from 'axios'
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
+
+// parse Telegram initData string like "key1=val1&key2=val2"
+function parseInitDataString(initData) {
+  if (!initData || typeof initData !== 'string') return {}
+  const pairs = initData.split('&')
+  const out = {}
+  for (const p of pairs) {
+    const [k, v] = p.split('=')
+    if (!k) continue
+    out[k] = decodeURIComponent(v || '')
+  }
+  return out
+}
 
 export default function useClient() {
   let ref = null
 
-  // Read referrer from multiple sources (cover all Telegram entry points)
   try {
     const url = new URL(window.location.href)
-    ref = url.searchParams.get('ref') || url.searchParams.get('referrer') || null
+    ref = url.searchParams.get('ref') || url.searchParams.get('referrer') || url.searchParams.get('start') || url.searchParams.get('start_param') || null
 
-    // Telegram appends deep-link start parameter in different ways:
-    const tgStartParam = url.searchParams.get('tgWebAppStartParam')
-    if (!ref && tgStartParam) ref = tgStartParam
+    // Telegram web app may expose start param in different places
+    const tgWebAppStartParam = url.searchParams.get('tgWebAppStartParam') || null
+    if (!ref && tgWebAppStartParam) ref = tgWebAppStartParam
 
-    // From SDK (more reliable inside Telegram)
-    const sdkRef = window?.Telegram?.WebApp?.initDataUnsafe?.start_param
-    if (!ref && sdkRef) ref = sdkRef
+    // Try SDK / WebApp initDataUnsafe (more reliable inside Telegram)
+    try {
+      const sdkRef = window?.Telegram?.WebApp?.initDataUnsafe?.start_param || window?.Telegram?.WebApp?.initDataUnsafe?.start || null
+      if (!ref && sdkRef) ref = sdkRef
+    } catch (e) {}
 
-  } catch {}
-
-  // Persist & reuse referral so the bottom "Open" button still carries it
-  try {
-    if (ref && ref !== 'undefined' && ref !== 'null') {
-      localStorage.setItem('ref_keeper', ref)
-      console.log('🔗 Referral code stored:', ref)
+    // Parse explicit initData (if provided as query param)
+    const rawInit = url.searchParams.get('initData') || (window?.Telegram?.WebApp?.initData) || ''
+    const parsedInit = parseInitDataString(rawInit)
+    if (!ref && parsedInit) {
+      ref = parsedInit.start_param || parsedInit.start || parsedInit.startParam || null
     }
-    if (!ref) {
-      const stored = localStorage.getItem('ref_keeper')
-      if (stored && stored !== 'undefined' && stored !== 'null') {
-        ref = stored
-        console.log('🔗 Referral code retrieved from storage:', ref)
-      }
-    }
-  } catch {}
 
-  // Anonymous id (helps backend tie pre-auth actions)
-  let anonId = null
-  try {
-    anonId = localStorage.getItem('anonId')
-    if (!anonId) {
-      anonId = 'web_' + Math.random().toString(36).slice(2, 10)
-      localStorage.setItem('anonId', anonId)
+    // Cleanup
+    if (typeof ref === 'string') {
+      ref = ref.trim()
+      if (ref === '' || ref === 'null' || ref === 'undefined') ref = null
     }
-  } catch {}
+  } catch (e) {
+    // ignore
+  }
+
+  let anonId = localStorage.getItem('anonId')
+  if (!anonId) {
+    anonId = 'web_' + Math.random().toString(36).slice(2, 10)
+    localStorage.setItem('anonId', anonId)
+  }
+  const adminSecret = localStorage.getItem('adminSecret') || ''
 
   const headers = {
-    'x-telegram-init-data': (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || ''
+    'x-telegram-init-data': (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || '',
+    'x-anon-id': anonId,
+    'x-admin-secret': adminSecret
   }
-  if (anonId) headers['x-anon-id'] = anonId
-  if (ref && ref !== 'undefined' && ref !== 'null') {
-    headers['x-referrer'] = ref
-    console.log('📤 Sending referrer header:', ref)
-  }
+  if (ref) headers['x-referrer'] = ref
 
-  // Create axios instance with request interceptor for consistent referral tracking
-  const client = axios.create({ 
-    baseURL: API_BASE, 
-    headers, 
-    withCredentials: true 
-  })
+  const client = axios.create({ baseURL: API_BASE, headers })
 
-  // Add request interceptor to ensure referral is always sent
-  client.interceptors.request.use((config) => {
-    // Always try to include referrer if we have it
-    const currentRef = localStorage.getItem('ref_keeper')
-    if (currentRef && currentRef !== 'undefined' && currentRef !== 'null' && !config.headers['x-referrer']) {
-      config.headers['x-referrer'] = currentRef
-    }
+  // Add request interceptor to ensure x-referrer is always sent when available
+  client.interceptors.request.use(config => {
+    try {
+      if (!config.headers) config.headers = {}
+      if (ref && !config.headers['x-referrer'] && !config.headers['X-Referrer']) {
+        config.headers['x-referrer'] = ref
+      }
+      // fallback: attach ref as query param to help servers behind proxies
+      if (ref && config.url && !config.url.includes('ref=')) {
+        const url = new URL(config.baseURL + config.url, window.location.origin)
+        if (!url.searchParams.get('ref')) {
+          url.searchParams.set('ref', ref)
+          // update config.url to relative path only
+          config.url = url.pathname + url.search
+        }
+      }
+    } catch (e) {}
     return config
   })
 
@@ -81,5 +95,6 @@ export default function useClient() {
     }
   )
 
+  console.log('📤 Sending referrer header:', ref)
   return client
 }
