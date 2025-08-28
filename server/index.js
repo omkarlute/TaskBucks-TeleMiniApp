@@ -63,7 +63,8 @@ const TaskSchema = new mongoose.Schema({
 
 const CompletionSchema = new mongoose.Schema({
   userId: { type: String, index: true },
-  taskId: { type: String, index: true },
+  taskId: { type: String, index: true, unique: true, sparse: false },
+  // unique across a specific user+task; we'll enforce via compound index below
   status: { type: String, enum: ['completed'], default: 'completed' },
   createdAt: { type: Date, default: () => new Date() }
 });
@@ -103,11 +104,14 @@ async function seedTasks() {
 }
 await seedTasks();
 
-// --- Auth middleware ---
+// --- Auth-ish middleware ---
+// We accept either Telegram init data (parsed upstream) or an anon id header.
+// We also capture a referrer header and set referrerId only once.
 app.use(async (req, res, next) => {
   try {
     const anonId = req.headers['x-anon-id'];
     const tgInit = req.headers['x-telegram-init-data'] || '';
+    // Extremely simplified parse; in production verify hash!
     let tgUser = null;
     if (tgInit && typeof tgInit === 'string' && tgInit.includes('user=')) {
       try {
@@ -125,6 +129,7 @@ app.use(async (req, res, next) => {
     const refHeader = req.headers['x-referrer'];
     const referrerId = refHeader ? String(refHeader) : null;
 
+    // Upsert user
     let user = await User.findOne({ id });
     if (!user) {
       user = await User.create({
@@ -135,6 +140,7 @@ app.use(async (req, res, next) => {
         is_premium: !!tgUser?.is_premium,
       });
     } else {
+      // update profile fields opportunistically
       const up = {};
       if (tgUser?.first_name && tgUser.first_name !== user.first_name) up.first_name = tgUser.first_name;
       if (tgUser?.username && tgUser.username !== user.username) up.username = tgUser.username;
@@ -144,11 +150,14 @@ app.use(async (req, res, next) => {
       }
     }
 
+    // Attach referrer if present and not set before and not self
     if (referrerId && !user.referrerId && referrerId !== id) {
+      // ensure referrer exists
       const ref = await User.findOne({ id: referrerId });
       if (ref) {
         user.referrerId = referrerId;
         await user.save();
+        // add to referrer's referrals list if not already there
         await User.updateOne(
           { id: referrerId },
           { $addToSet: { referrals: id }, $currentDate: { updatedAt: true } }
@@ -164,8 +173,8 @@ app.use(async (req, res, next) => {
   }
 });
 
-// --- Routes (no /api prefix now) ---
-app.get('/me', async (req, res) => {
+// --- Routes ---
+app.get('/api/me', async (req, res) => {
   const u = req.user;
   const base = getBaseUrl(req);
   const link = `${base}/?ref=${encodeURIComponent(u.id)}`;
@@ -180,7 +189,8 @@ app.get('/me', async (req, res) => {
   });
 });
 
-app.get('/tasks', async (req, res) => {
+// Tasks with per-user status
+app.get('/api/tasks', async (req, res) => {
   const all = await Task.find({ active: true }).lean();
   const done = await Completion.find({ userId: req.user.id }).lean();
   const doneSet = new Set(done.map(c => c.taskId));
@@ -195,7 +205,8 @@ app.get('/tasks', async (req, res) => {
   res.json({ tasks });
 });
 
-app.post('/tasks/:id/verify', async (req, res) => {
+// Verify task
+app.post('/api/tasks/:id/verify', async (req, res) => {
   const taskId = String(req.params.id);
   const { code } = req.body || {};
   const task = await Task.findOne({ id: taskId });
@@ -204,13 +215,16 @@ app.post('/tasks/:id/verify', async (req, res) => {
     return res.status(400).json({ error: 'Invalid code' });
   }
 
+  // If already completed, return ok
   const exists = await Completion.findOne({ userId: req.user.id, taskId });
   if (exists) return res.json({ ok: true, already: true });
 
+  // Create completion and credit user
   await Completion.create({ userId: req.user.id, taskId, status: 'completed' });
   const reward = Number(task.reward) || 0;
   await User.updateOne({ id: req.user.id }, { $inc: { balance: reward }, $currentDate: { updatedAt: true } });
 
+  // Referral bonus 5% lifetime to referrer
   const freshUser = await User.findOne({ id: req.user.id });
   if (freshUser?.referrerId) {
     const bonus = +(reward * 0.05).toFixed(8);
@@ -223,7 +237,8 @@ app.post('/tasks/:id/verify', async (req, res) => {
   res.json({ ok: true, reward });
 });
 
-app.get('/referrals', async (req, res) => {
+// Referrals view
+app.get('/api/referrals', async (req, res) => {
   const u = await User.findOne({ id: req.user.id }).lean();
   const base = getBaseUrl(req);
   const link = `${base}/?ref=${encodeURIComponent(u.id)}`;
@@ -241,7 +256,8 @@ app.get('/referrals', async (req, res) => {
   });
 });
 
-app.post('/withdraw', async (req, res) => {
+// Withdraw
+app.post('/api/withdraw', async (req, res) => {
   const { amount, method, details } = req.body || {};
   const amt = Number(amount);
   if (!amt || amt <= 0) return res.status(400).json({ error: 'Invalid amount' });
@@ -265,16 +281,16 @@ app.post('/withdraw', async (req, res) => {
   res.json({ ok: true, withdrawal: { id: w.id, amount: w.amount, status: w.status } });
 });
 
-app.get('/withdrawals', async (req, res) => {
+app.get('/api/withdrawals', async (req, res) => {
   const items = await Withdrawal.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean();
   res.json({ withdrawals: items.map(w => ({ id: w.id, amount: w.amount, status: w.status, createdAt: w.createdAt })) });
 });
 
-// --- Admin (still keep prefixed to avoid clash) ---
+// --- Admin (minimal) ---
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
 
-app.post('/admin/login', (req, res) => {
+app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body || {};
   if (username === ADMIN_USER && password === ADMIN_PASS) {
     res.cookie('admin', '1', { httpOnly: true, sameSite: 'none', secure: true });
@@ -283,12 +299,12 @@ app.post('/admin/login', (req, res) => {
   res.status(401).json({ error: 'Unauthorized' });
 });
 
-app.get('/admin/tasks', async (req, res) => {
+app.get('/api/admin/tasks', async (req, res) => {
   const tasks = await Task.find({}).lean();
   res.json({ tasks });
 });
 
-app.post('/admin/tasks', async (req, res) => {
+app.post('/api/admin/tasks', async (req, res) => {
   const { title, link, reward, code } = req.body || {};
   if (!title || !link || !code) return res.status(400).json({ error: 'Missing fields' });
   const id = new mongoose.Types.ObjectId().toString();
