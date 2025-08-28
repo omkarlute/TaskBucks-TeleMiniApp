@@ -115,40 +115,91 @@ function verifyTelegramInitData(initData, botToken) {
 }
 
 // --- Enhanced referral helper function ---
+
 async function ensureReferralTracking(req) {
-  const ref = req.header('x-referrer') || req.query.ref || req.tgStartParam || null;
-  
-  if (!ref || ref === req.tgUser.id) return null;
-  
-  let user = await User.findOne({ id: req.tgUser.id });
-  if (!user) {
-    user = await User.create({
-      id: req.tgUser.id,
-      first_name: req.tgUser.first_name,
-      username: req.tgUser.username,
-      referrerId: ref // Set referral immediately during user creation
-    });
-  }
-  
-  // Only set referral if user doesn't already have one
-  if (!user.referrerId && ref !== user.id) {
-    const refUser = await User.findOne({ id: ref });
-    if (refUser) {
-      user.referrerId = refUser.id;
-      await user.save();
-      
-      // Ensure referrer has this user in their referrals list
-      if (!refUser.referrals.includes(user.id)) {
-        refUser.referrals.push(user.id);
-        await refUser.save();
+  try {
+    let rawRef = req.header('x-referrer') || req.query.ref || req.tgStartParam || null;
+    if (!rawRef || !req.tgUser) return null;
+
+    let ref = String(rawRef || '').trim();
+    if (!ref || ref === '' || ref === req.tgUser.id) return null;
+
+    // If it's a URL or contains query params, try to extract common keys (ref, start, start_param)
+    try {
+      if (ref.includes('://') || ref.includes('http') || ref.includes('?')) {
+        try {
+          const u = new URL(ref.includes('http') ? ref : (ref.startsWith('/') ? (req.protocol + '://' + req.get('host') + ref) : ('https://' + ref)));
+          ref = u.searchParams.get('ref') || u.searchParams.get('start') || u.searchParams.get('start_param') || ref;
+        } catch (e) {
+          // try parsing as query string
+          try {
+            const sp = new URLSearchParams(ref);
+            ref = sp.get('ref') || sp.get('start') || sp.get('start_param') || ref;
+          } catch (err) {}
+        }
       }
-      
-      console.log(`✅ Referral established: ${user.id} referred by ${refUser.id}`);
+    } catch(e) {}
+
+    // Normalize common telegram forms: tg://user?id=12345 and @username
+    ref = ref.replace(/^tg:\/\/user\?id=/i, '').replace(/^@/, '').replace(/\/+$/, '').trim();
+
+    // Try to find a user by id first, then username
+    let refUser = await User.findOne({ id: ref });
+    if (!refUser) {
+      refUser = await User.findOne({ username: ref });
     }
+
+    // If still not found, maybe ref is a base64 payload containing JSON with a ref field
+    if (!refUser) {
+      try {
+        const decoded = Buffer.from(ref, 'base64').toString('utf-8');
+        const parsed = JSON.parse(decoded);
+        if (parsed && (parsed.ref || parsed.referredBy || parsed.u)) {
+          const candidate = parsed.ref || parsed.referredBy || parsed.u;
+          refUser = await User.findOne({ id: candidate }) || await User.findOne({ username: String(candidate).replace(/^@/,'') });
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    if (!refUser) {
+      console.log(`⚠️ Referrer not found for ref="${rawRef}" normalized="${ref}"`);
+      return null;
+    }
+
+    // Ensure the current user exists
+    let user = await User.findOne({ id: req.tgUser.id });
+    if (!user) {
+      user = await User.create({
+        id: req.tgUser.id,
+        first_name: req.tgUser.first_name,
+        username: req.tgUser.username,
+        referrerId: refUser.id
+      });
+    } else {
+      // Only set referrer if not already present and not self
+      if ((!user.referrerId || user.referrerId === null) && user.id !== refUser.id) {
+        user.referrerId = refUser.id;
+        await user.save();
+      }
+    }
+
+    // Ensure referrer's referrals array contains this user
+    if (!Array.isArray(refUser.referrals)) refUser.referrals = [];
+    if (!refUser.referrals.includes(user.id) && user.id !== refUser.id) {
+      refUser.referrals.push(user.id);
+      await refUser.save();
+    }
+
+    console.log(`✅ Referral established: ${user.id} referred by ${refUser.id}`);
+    return user;
+  } catch (error) {
+    console.error('Error in ensureReferralTracking:', error);
+    return null;
   }
-  
-  return user;
 }
+
 
 // --- API Auth Middleware ---
 async function telegramAuth(req, res, next) {
