@@ -85,29 +85,46 @@ async function seedTasks() {
 }
 seedTasks().catch(console.error);
 
-// --- Middleware: Telegram Auth ---
-function verifyTelegramInitData(initData, botToken) {
-  if (!initData) return false;
-  return true;
+// --- Telegram init helpers ---
+function getCheckString(params) {
+  const keys = Object.keys(params).sort();
+  return keys.filter(k => k !== 'hash').map(k => `${k}=${params[k]}`).join('\n');
 }
 function parseInitData(initData) {
-  const params = new URLSearchParams(initData);
-  let result = {};
-  for (const [k, v] of params.entries()) {
-    result[k] = v;
+  const pairs = initData.split('&');
+  const out = {};
+  for (const p of pairs) {
+    const [k, v] = p.split('=');
+    if (!k) continue;
+    out[k] = decodeURIComponent(v || '');
   }
-  return result;
+  return out;
+}
+function verifyTelegramInitData(initData, botToken) {
+  try {
+    const data = parseInitData(initData);
+    const hash = data.hash;
+    delete data.hash;
+    const dataCheckString = getCheckString(data);
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    return hmac === hash;
+  } catch (e) {
+    return false;
+  }
 }
 
-// --- Auth middleware ---
-app.use(async (req, res, next) => {
-  const initData = req.header('x-telegram-init') || req.query.initData;
+// --- API Auth Middleware ---
+async function telegramAuth(req, res, next) {
+  const initData = req.header('x-telegram-init-data') || req.query.initData;
 
+  // ✅ Allow dev without initData
   if ((!initData || initData === '') && process.env.NODE_ENV !== 'production') {
     req.tgUser = { id: "dev_anon", first_name: "Dev", username: "localtester" };
     return next();
   }
 
+  // Allow anonymous web users via x-anon-id header
   if (!initData) {
     const anon = req.header('x-anon-id') || null;
     if (anon) {
@@ -118,7 +135,9 @@ app.use(async (req, res, next) => {
   }
 
   const ok = verifyTelegramInitData(initData, process.env.TELEGRAM_BOT_TOKEN || '');
-  if (!ok) return res.status(401).json({ error: 'Invalid Telegram init data' });
+  if (!ok) {
+    return res.status(401).json({ error: 'Invalid Telegram init data' });
+  }
 
   const parsed = parseInitData(initData);
   try {
@@ -128,71 +147,117 @@ app.use(async (req, res, next) => {
     req.tgUser = null;
   }
 
+  // Expose start_param (for referrals via deep links)
   try {
     req.tgStartParam = parsed.start_param || parsed.startParam || null;
   } catch {
     req.tgStartParam = null;
   }
 
-  next();
-});
+  // Merge anon <-> telegram user (avoid duplicates)
+  try {
+    const anonId = req.header('x-anon-id') || null;
+    if (anonId && req.tgUser && anonId !== req.tgUser.id) {
+      const anonUser = await User.findOne({ id: anonId });
+      const tgUser = await User.findOne({ id: req.tgUser.id });
 
-// --- Handlers ---
+      if (anonUser) {
+        if (tgUser) {
+          tgUser.balance = (tgUser.balance || 0) + (anonUser.balance || 0);
+          tgUser.completedTaskIds = Array.from(new Set([...(tgUser.completedTaskIds||[]), ...(anonUser.completedTaskIds||[])]));
+          tgUser.referrals = Array.from(new Set([...(tgUser.referrals||[]), ...(anonUser.referrals||[])]));
+          tgUser.referralEarnings = (tgUser.referralEarnings || 0) + (anonUser.referralEarnings || 0);
+          await tgUser.save();
+          await User.updateMany({ referrerId: anonUser.id }, { $set: { referrerId: tgUser.id } });
+          await User.deleteOne({ id: anonUser.id });
+        } else {
+          anonUser.id = req.tgUser.id;
+          anonUser.first_name = req.tgUser.first_name || anonUser.first_name;
+          anonUser.username = req.tgUser.username || anonUser.username;
+          await anonUser.save();
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Error merging anon user with telegram user', e);
+  }
+
+  next();
+}
+
+// Admin auth middleware
+function adminAuth(req, res, next) {
+  try {
+    const token = req.cookies?.admin_token || '';
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    const payload = jwt.verify(token, process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret');
+    if (payload?.role !== 'admin') return res.status(401).json({ error: 'Unauthorized' });
+    req.admin = { username: payload.username };
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
+
+// --- API Routes ---
 const meHandler = async (req, res) => {
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) {
     user = await User.create({
       id: req.tgUser.id,
       first_name: req.tgUser.first_name,
-      last_name: req.tgUser.last_name,
-      username: req.tgUser.username,
+      username: req.tgUser.username
     });
-
-    // ✅ Referral assignment
-    if (req.tgStartParam && req.tgStartParam !== user.id) {
-      const refUser = await User.findOne({ id: req.tgStartParam });
-      if (refUser) {
-        user.referrerId = refUser.id;
-        await user.save();
-        if (!refUser.referrals.includes(user.id)) {
-          refUser.referrals.push(user.id);
-          await refUser.save();
-        }
+  }
+  const ref = req.header('x-referrer') || req.query.ref || req.tgStartParam || null;
+  if (ref && !user.referrerId && ref !== user.id) {
+    const refUser = await User.findOne({ id: ref });
+    if (refUser) {
+      user.referrerId = refUser.id;
+      await user.save();
+      if (!refUser.referrals.includes(user.id)) {
+        refUser.referrals.push(user.id);
+        await refUser.save();
       }
     }
   }
-
-  const referralLink = `${process.env.WEBAPP_URL || 'http://localhost:5173'}?ref=${user.id}`;
-  res.json({
-    id: user.id,
-    first_name: user.first_name,
-    username: user.username,
-    balance: user.balance,
-    referrals: user.referrals,
-    referralEarnings: user.referralEarnings,
-    referral: {
-      link: referralLink,
-      count: user.referrals.length,
-      earnings: user.referralEarnings
-    }
-  });
+  res.json({ user });
 };
 
 const tasksHandler = async (req, res) => {
+  let user = await User.findOne({ id: req.tgUser.id });
+  if (!user) {
+    user = await User.create({
+      id: req.tgUser.id,
+      first_name: req.tgUser.first_name,
+      username: req.tgUser.username
+    });
+  }
   const tasks = await Task.find({ active: true });
-  res.json(tasks);
+  const transformedTasks = tasks.map(task => ({
+    id: task.id,
+    title: task.title,
+    url: task.link,
+    description: task.description || `Complete this task to earn $${task.reward}`,
+    reward: task.reward,
+    code: task.code,
+    active: task.active,
+    status: (user.completedTaskIds || []).includes(task.id) ? 'completed' : 'pending'
+  }));
+  res.json({ tasks: transformedTasks });
 };
 
-const completeTaskHandler = async (req, res) => {
-  const { taskId } = req.body;
+const taskVerifyHandler = async (req, res) => {
+  const taskId = req.params.id;
+  const { code } = req.body || {};
+  const task = await Task.findOne({ id: taskId, active: true });
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  if (!code || String(code).trim() !== String(task.code).trim()) return res.status(400).json({ error: 'Incorrect code' });
+
   let user = await User.findOne({ id: req.tgUser.id });
   if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const task = await Task.findOne({ id: taskId });
-  if (!task) return res.status(404).json({ error: 'Task not found' });
-
-  if (user.completedTaskIds.includes(task.id)) {
-    return res.json({ ok: true, message: 'Already completed' });
+  if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
+    return res.status(400).json({ error: 'Task already completed' });
   }
 
   user.balance = (user.balance || 0) + (task.reward || 0);
@@ -229,26 +294,139 @@ const withdrawHandler = async (req, res) => {
   if ((user.balance || 0) < amount) return res.status(400).json({ error: 'Insufficient balance' });
 
   const w = await Withdrawal.create({
-    id: nanoid(10),
+    id: nanoid(12),
     userId: user.id,
-    method,
-    details,
+    method: method || 'manual',
+    details: details || { address: req.body?.address || '' },
     amount,
     status: 'pending',
     createdAt: new Date()
   });
 
-  user.balance -= amount;
+  user.balance = Math.floor(((user.balance || 0) - amount) * 100) / 100;
   await user.save();
-
-  res.json({ ok: true, withdrawal: w });
+  res.json({ ok: true, withdraw: w });
 };
 
-// --- Routes ---
-app.get('/api/me', meHandler);
-app.get('/api/tasks', tasksHandler);
-app.post('/api/complete-task', completeTaskHandler);
-app.post('/api/withdraw', withdrawHandler);
+const withdrawsHandler = async (req, res) => {
+  const list = await Withdrawal.find({ userId: req.tgUser.id }).sort({ createdAt: -1 });
+  res.json({ withdraws: list });
+};
 
-const port = process.env.PORT || 3001;
-app.listen(port, () => console.log(`🚀 Server running on ${port}`));
+const referralsHandler = async (req, res) => {
+  const user = await User.findOne({ id: req.tgUser.id });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const refs = await User.find({ referrerId: user.id }).select('id first_name username');
+  const botUsername = process.env.TELEGRAM_BOT_USERNAME || process.env.VITE_BOT_USERNAME || 'Taskbucksbot';
+  const botLink = `https://t.me/${botUsername}?start=${user.id}`;
+  const webLink = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}/?ref=${user.id}`;
+  res.json({
+    link: botLink,
+    webLink,
+    referrals: refs,
+    count: (refs || []).length,
+    referralEarnings: user.referralEarnings || 0,
+    earnings: user.referralEarnings || 0
+  });
+};
+
+// Apply routes
+app.get('/api/me', telegramAuth, meHandler);
+app.get('/me', telegramAuth, meHandler);
+app.get('/api/tasks', telegramAuth, tasksHandler);
+app.get('/tasks', telegramAuth, tasksHandler);
+app.post('/api/tasks/:id/verify', telegramAuth, taskVerifyHandler);
+app.post('/tasks/:id/verify', telegramAuth, taskVerifyHandler);
+app.post('/api/withdraw', telegramAuth, withdrawHandler);
+app.post('/withdraw', telegramAuth, withdrawHandler);
+app.get('/api/withdraws', telegramAuth, withdrawsHandler);
+app.get('/withdraws', telegramAuth, withdrawsHandler);
+app.get('/api/referrals', telegramAuth, referralsHandler);
+app.get('/referrals', telegramAuth, referralsHandler);
+
+// --- Admin routes ---
+app.post('/api/admin/seed', adminAuth, async (req, res) => {
+  await seedTasks();
+  res.json({ ok: true });
+});
+app.get('/api/admin/tasks', adminAuth, async (req, res) => {
+  const tasks = await Task.find({}).sort({ active: -1 });
+  res.json({ tasks });
+});
+app.post('/api/admin/tasks', adminAuth, async (req, res) => {
+  const { title, link, reward, code, description, active=true } = req.body || {};
+  if (!title || !link || !code || typeof reward !== 'number') return res.status(400).json({ error: 'Missing fields' });
+  const t = await Task.create({ id: nanoid(8), title, link, description: description || '', reward, code, active });
+  res.json({ task: t });
+});
+app.put('/api/admin/tasks/:id', adminAuth, async (req, res) => {
+  const { title, link, reward, code, description, active } = req.body || {};
+  const t = await Task.findOne({ id: req.params.id });
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  if (title !== undefined) t.title = title;
+  if (link !== undefined) t.link = link;
+  if (description !== undefined) t.description = description;
+  if (code !== undefined) t.code = code;
+  if (active !== undefined) t.active = !!active;
+  if (reward !== undefined) {
+    const num = Number(reward);
+    if (Number.isNaN(num)) return res.status(400).json({ error: 'Invalid reward' });
+    t.reward = num;
+  }
+  await t.save();
+  res.json({ task: t });
+});
+app.delete('/api/admin/tasks/:id', adminAuth, async (req, res) => {
+  const t = await Task.findOneAndDelete({ id: req.params.id });
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
+});
+app.get('/api/admin/withdrawals', adminAuth, async (req, res) => {
+  const withdrawals = await Withdrawal.find({}).sort({ createdAt: -1 });
+  res.json({ withdrawals });
+});
+app.post('/api/admin/withdrawals/:id/status', adminAuth, async (req, res) => {
+  const { status } = req.body || {};
+  const allowed = ['pending','approved','completed','rejected'];
+  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  const w = await Withdrawal.findOne({ id: req.params.id });
+  if (!w) return res.status(404).json({ error: 'Not found' });
+  w.status = status;
+  await w.save();
+  res.json({ ok: true, withdrawal: w });
+});
+
+// --- Healthcheck ---
+app.get('/healthz', (_, res) => res.json({ ok: true }));
+
+// --- Redirect helper ---
+const redirectToClient = (req, res) => {
+  try {
+    const q = req.originalUrl.includes('?') ? req.originalUrl.substring(req.originalUrl.indexOf('?')) : '';
+    const client = process.env.CLIENT_URL || (process.env.SERVE_CLIENT === 'true' ? '/' : '/');
+    const base = client.endsWith('/') ? client : client + '/';
+    return res.redirect(302, base + (q || ''));
+  } catch (e) {
+    console.error('Redirect error', e);
+    return res.redirect(302, '/');
+  }
+};
+
+// --- Ensure Telegram “Open” button works ---
+app.all(['/start', '/start/*'], redirectToClient);
+
+// --- Root fallback ---
+app.all(['/', '/index.html'], redirectToClient);
+
+// --- Serve frontend locally if enabled ---
+if (process.env.SERVE_CLIENT === 'true') {
+  const dist = path.join(__dirname, '..', 'client', 'dist');
+  app.use(express.static(dist));
+  app.get('*', (_, res) => res.sendFile(path.join(dist, 'index.html')));
+}
+
+// --- Start ---
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
