@@ -58,6 +58,7 @@ export default function useClient() {
   const headers = {
     'x-telegram-init-data': (typeof window !== 'undefined' && window.Telegram?.WebApp?.initData) || '',
     'x-anon-id': anonId,
+    'Cache-Control': 'no-cache',
     'x-admin-secret': adminSecret
   }
   if (ref) headers['x-referrer'] = ref

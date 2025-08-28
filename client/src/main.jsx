@@ -14,6 +14,15 @@ if (typeof window !== 'undefined' && !window.Telegram?.WebApp && MODE === 'produ
   try {
     const url = new URL(window.location.href)
     const ref = url.searchParams.get('ref') || ''
+    // robust deep link to open mini app with referral
+    try {
+      const payload = btoa(JSON.stringify({ ref }));
+      const deepLink = `https://t.me/${BOT}?startapp=${encodeURIComponent(payload)}`;
+      // redirect preserving referral
+      window.location.replace(deepLink);
+    } catch (e) {
+      window.location.href = `https://t.me/${BOT}`;
+    }
     const startParam = ref ? `?start=${encodeURIComponent(ref)}` : ''
     const botLink = `https://t.me/${BOT}${startParam}`
     window.location.href = botLink
