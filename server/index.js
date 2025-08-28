@@ -348,35 +348,75 @@ const taskVerifyHandler = async (req, res) => {
     return res.status(400).json({ error: 'Task already completed' });
   }
 
-  // Add reward to user
-  user.balance = (user.balance || 0) + (task.reward || 0);
-  user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
-  await user.save();
-
-  // Process referral bonus
-  if (user.referrerId) {
-    const refUser = await User.findOne({ id: user.referrerId });
-    if (refUser) {
-      let bonus = Number((task.reward || 0) * 0.05) || 0;
-      bonus = Math.floor(bonus * 100) / 100;
-      
-      refUser.balance = Math.floor(((refUser.balance || 0) + bonus) * 100) / 100;
-      refUser.referralEarnings = Math.floor(((refUser.referralEarnings || 0) + bonus) * 100) / 100;
-      
-      // Double-check referrals array
-      if (!refUser.referrals.includes(user.id)) {
-        refUser.referrals.push(user.id);
-      }
-      
-      await refUser.save();
-      
-      console.log(`✅ Referral bonus: ${refUser.id} earned $${bonus} from ${user.id} completing task ${task.id}`);
-    } else {
-      console.warn(`⚠️ Referrer not found for user ${user.id}, referrerId: ${user.referrerId}`);
+  
+  // Use a mongoose transaction to atomically update user and referrer
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    // Reload user within session
+    user = await User.findOne({ id: req.tgUser.id }).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ error: 'User not found' });
     }
-  }
+    if (user.completedTaskIds && user.completedTaskIds.includes(task.id)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ error: 'Task already completed' });
+    }
 
-  res.json({ ok: true });
+    // Add reward to user
+    user.balance = (user.balance || 0) + (task.reward || 0);
+    user.completedTaskIds = Array.from(new Set([...(user.completedTaskIds||[]), task.id]));
+    await user.save({ session });
+
+    // Process referral bonus
+    if (user.referrerId) {
+      const refUser = await User.findOne({ id: user.referrerId }).session(session);
+      if (refUser) {
+        let bonus = Number((task.reward || 0) * 0.05) || 0;
+        bonus = Math.floor(bonus * 100) / 100;
+
+        // ensure idempotency: track paid bonuses per task on referred user
+        user.referralRewardsPaidFor = user.referralRewardsPaidFor || [];
+        if (!user.referralRewardsPaidFor.includes(task.id)) {
+          // credit referrer
+          refUser.balance = Math.floor(((refUser.balance || 0) + bonus) * 100) / 100;
+          refUser.referralEarnings = Math.floor(((refUser.referralEarnings || 0) + bonus) * 100) / 100;
+
+          // Double-check referrals array
+          refUser.referrals = refUser.referrals || [];
+          if (!refUser.referrals.includes(user.id)) {
+            refUser.referrals.push(user.id);
+          }
+
+          // persist referrer
+          await refUser.save({ session });
+
+          // mark as paid on user
+          user.referralRewardsPaidFor.push(task.id);
+          await user.save({ session });
+
+          console.log(`✅ Referral bonus: ${refUser.id} earned $${bonus} from ${user.id} completing task ${task.id}`);
+        } else {
+          console.log(`ℹ️ Referral bonus already paid for user ${user.id} task ${task.id}`);
+        }
+      } else {
+        console.warn(`⚠️ Referrer not found for user ${user.id}, referrerId: ${user.referrerId}`);
+      }
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+    return res.json({ ok: true });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('❌ Error processing task completion/referral:', err);
+    return res.status(500).json({ error: 'Server error processing task' });
+  }
+res.json({ ok: true });
 };
 
 const withdrawHandler = async (req, res) => {
