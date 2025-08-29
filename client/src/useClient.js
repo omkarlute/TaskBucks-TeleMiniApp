@@ -7,7 +7,7 @@ export default function useClient() {
   // Read referrer from multiple sources (cover all Telegram entry points)
   try {
     const url = new URL(window.location.href)
-    ref = url.searchParams.get('ref') || url.searchParams.get('referrer') || null
+    ref = url.searchParams.get('ref') || url.searchParams.get('referrer') || url.searchParams.get('startapp') || url.searchParams.get('start') || null
 
     // Telegram appends deep-link start parameter in different ways:
     const tgStartParam = url.searchParams.get('tgWebAppStartParam')
