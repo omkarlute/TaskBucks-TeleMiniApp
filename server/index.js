@@ -21,7 +21,12 @@ app.use(express.json());
 app.use(helmet());
 app.use(cookieParser());
 app.use(morgan('dev'));
-app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true }));
+const allowedOrigin = process.env.CLIENT_URL || "http://localhost:5173";
+app.use(cors({
+  origin: allowedOrigin,
+  credentials: true
+}));
+
 
 // --- Mongo ---
 const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tasktoearn';
@@ -434,7 +439,12 @@ app.post('/api/admin/login', (req, res) => {
     { expiresIn: '1d' }
   );
 
-  res.cookie('admin_token', token, { httpOnly: true, sameSite: 'lax' });
+res.cookie('admin_token', token, {
+  httpOnly: true,
+  sameSite: 'none', // allow cross-site cookies
+  secure: true      // required on Render/Vercel (HTTPS)
+});
+
   res.json({ ok: true });
 });
 
