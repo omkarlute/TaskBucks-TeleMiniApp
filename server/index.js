@@ -434,7 +434,13 @@ app.post('/api/admin/login', (req, res) => {
     process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret',
     { expiresIn: '1d' }
   );
-res.cookie('admin_token', token, { httpOnly: true, sameSite: 'none', // allow cross-site cookies secure: true // required on Render/Vercel (HTTPS) });
+
+res.cookie('admin_token', token, {
+  httpOnly: true,
+  sameSite: 'none', // allow cross-site cookies
+  secure: true      // required on Render/Vercel (HTTPS)
+});
+
   res.json({ ok: true });
 });
 
