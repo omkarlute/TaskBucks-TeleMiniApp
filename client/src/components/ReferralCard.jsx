@@ -7,9 +7,11 @@ export default function ReferralCard({ data, loading }) {
   if (loading) {
     return <div className="bg-card border border-white/5 rounded-2xl p-4 animate-pulse h-28" />
   }
-  const link = data?.link || data?.webLink || ''
-  const count = data?.count ?? (data?.referrals ? data.referrals.length : 0)
-  const earnings = data?.referralEarnings ?? data?.earnings ?? 0
+const rawLink = data?.link || data?.webLink || ''
+const link = rawLink.replace('?start=', '?startapp=')
+const count = data?.count ?? (data?.referrals ? data.referrals.length : 0)
+const earnings = data?.referralEarnings ?? data?.earnings ?? 0
+
 
   function copyText() {
     navigator.clipboard.writeText(link)
