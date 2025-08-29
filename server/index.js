@@ -203,7 +203,6 @@ function adminAuth(req, res, next) {
 
 // --- API Routes ---
 const meHandler = async (req, res) => {
-  const REFERRAL_BONUS = parseFloat(process.env.REFERRAL_BONUS || "0.5");
   const uid = req.tgUser?.id;
 
   try {
@@ -246,7 +245,7 @@ const meHandler = async (req, res) => {
       console.log(`ℹ️ No referral candidate found for ${uid}`);
     }
 
-    // Apply referral attribution once
+    // Apply referral attribution once (without joining bonus)
     if (ref && !user.referrerId) {
       if (ref === user.id) {
         console.log(`⚠️ Self-referral attempt ignored. user=${user.id}`);
@@ -258,16 +257,14 @@ const meHandler = async (req, res) => {
           user.referrerId = refUser.id;
           await user.save();
 
-          // Credit referrer once per child
+          // Add to referrer's referrals list (without bonus)
           if (!Array.isArray(refUser.referrals)) refUser.referrals = [];
           if (!refUser.referrals.includes(user.id)) {
             refUser.referrals.push(user.id);
-            refUser.referralEarnings = Math.round(((refUser.referralEarnings || 0) + REFERRAL_BONUS) * 100) / 100;
-            refUser.balance = Math.round(((refUser.balance || 0) + REFERRAL_BONUS) * 100) / 100;
             await refUser.save();
-            console.log(`✅ Referral credited: inviter=${refUser.id} +$${REFERRAL_BONUS} for new user=${user.id}`);
+            console.log(`✅ Referral attributed: inviter=${refUser.id} for new user=${user.id} (no joining bonus)`);
           } else {
-            console.log(`ℹ️ Referrer ${refUser.id} already has child ${user.id} recorded, skipping duplicate credit.`);
+            console.log(`ℹ️ Referrer ${refUser.id} already has child ${user.id} recorded, skipping duplicate.`);
           }
         }
       }
@@ -488,7 +485,7 @@ const redirectToClient = (req, res) => {
   }
 };
 
-// --- Ensure Telegram “Open” button works ---
+// --- Ensure Telegram "Open" button works ---
 app.all(['/start', '/start/*'], redirectToClient);
 
 // --- Root fallback ---
