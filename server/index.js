@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -21,12 +22,7 @@ app.use(express.json());
 app.use(helmet());
 app.use(cookieParser());
 app.use(morgan('dev'));
-const allowedOrigin = process.env.CLIENT_URL || "http://localhost:5173";
-app.use(cors({
-  origin: allowedOrigin,
-  credentials: true
-}));
-
+app.use(cors({ origin: (origin, cb) => cb(null, true), credentials: true }));
 
 // --- Mongo ---
 const mongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/tasktoearn';
@@ -439,14 +435,7 @@ app.post('/api/admin/login', (req, res) => {
     { expiresIn: '1d' }
   );
 
-res.cookie('admin_token', token, {
-  httpOnly: true,
-  sameSite: 'none',
-  secure: true,
-  path: '/',                   // ✅ ensure sent on all routes
-});
-
-
+  res.cookie('admin_token', token, { httpOnly: true, sameSite: 'lax' });
   res.json({ ok: true });
 });
 
@@ -536,3 +525,5 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
+
+
