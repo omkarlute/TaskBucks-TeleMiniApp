@@ -417,6 +417,27 @@ app.get('/withdraws', telegramAuth, withdrawsHandler);
 app.get('/api/referrals', telegramAuth, referralsHandler);
 app.get('/referrals', telegramAuth, referralsHandler);
 
+// Admin login
+app.post('/api/admin/login', (req, res) => {
+  const { username, password } = req.body;
+
+  const adminUser = process.env.ADMIN_USER || 'admin';
+  const adminPass = process.env.ADMIN_PASSWORD || 'password';
+
+  if (username !== adminUser || password !== adminPass) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  const token = jwt.sign(
+    { role: 'admin', username },
+    process.env.ADMIN_JWT_SECRET || 'dev_jwt_secret',
+    { expiresIn: '1d' }
+  );
+
+  res.cookie('admin_token', token, { httpOnly: true, sameSite: 'lax' });
+  res.json({ ok: true });
+});
+
 // --- Admin routes ---
 app.post('/api/admin/seed', adminAuth, async (req, res) => {
   await seedTasks();
