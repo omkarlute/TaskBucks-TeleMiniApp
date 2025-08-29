@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react'
 
 const MESSAGES = [
-  'Getting your tasks and rewards ready…',
-  'Summoning bonus fairies…',
-  'Too many legends online at once — including you 😎 — loading shortly!',
-  'Counting referrals (math is hard)…',
-  'Spinning up the mini app engines…'
+  '🚀 First-Ever Earn Bot on Telegram — history doesn’t load this fast 😉',
+  '💰 Securing your 60% share — because fairness takes a second!',
+  '📊 Crunching referral math — infinity is harder than it looks 😅',
+  '🔥 Too many earners online at once — including YOU!',
+  '✨ Preparing something epic — legends don’t just load, they arrive',
+  '🥇 Winners wait a second. Losers never earn. You’re clearly a winner 😉'
 ]
 
 // Epic 3D Rotating Polyhedron with Particles
