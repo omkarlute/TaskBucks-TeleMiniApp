@@ -148,6 +148,8 @@ async function telegramAuth(req, res, next) {
   }
 
   // Expose start_param (for referrals via deep links)
+  // Debug: show parsed Telegram user and start param
+  try { console.log(`🔐 telegramAuth: uid=${req.tgUser?.id || 'null'} start_param=${req.tgStartParam || 'null'}`) } catch {}
   try {
     req.tgStartParam = parsed.start_param || parsed.startParam || null;
   } catch {
@@ -202,65 +204,92 @@ function adminAuth(req, res, next) {
 // --- API Routes ---
 const meHandler = async (req, res) => {
   const REFERRAL_BONUS = parseFloat(process.env.REFERRAL_BONUS || "0.5");
+  const uid = req.tgUser?.id;
 
-  // 1) Ensure user exists (avoid duplicate key): try find, else create, catching E11000.
-  let user = await User.findOne({ id: req.tgUser.id });
-  if (!user) {
-    try {
-      user = await User.create({
-        id: req.tgUser.id,
-        first_name: req.tgUser.first_name,
-        last_name: req.tgUser.last_name || '',
-        username: req.tgUser.username || '',
-        balance: 0,
-        completedTaskIds: [],
-        referrerId: null,
-        referrals: [],
-        referralEarnings: 0
-      });
-    } catch (e) {
-      // Handle race condition duplicate insert
-      if (e && e.code === 11000) {
-        user = await User.findOne({ id: req.tgUser.id });
+  try {
+    // Ensure user exists (avoid duplicates)
+    let user = await User.findOne({ id: uid });
+    if (!user) {
+      console.log(`👤 Creating user ${uid}`);
+      try {
+        user = await User.create({
+          id: uid,
+          first_name: req.tgUser?.first_name || '',
+          last_name: req.tgUser?.last_name || '',
+          username: req.tgUser?.username || '',
+          balance: 0,
+          completedTaskIds: [],
+          referrerId: null,
+          referrals: [],
+          referralEarnings: 0
+        });
+      } catch (e) {
+        if (e && e.code === 11000) {
+          // Race condition; fetch existing
+          user = await User.findOne({ id: uid });
+        } else {
+          console.error("❌ User create error:", e);
+          throw e;
+        }
+      }
+    }
+
+    // Collect potential referrer from multiple sources
+    const headerRef = req.header('x-referrer') || null;
+    const queryRef = req.query.ref || req.query.start || req.query.startapp || null;
+    const startParamRef = req.tgStartParam || null;
+
+    const ref = headerRef || queryRef || startParamRef || null;
+    if (ref) {
+      console.log(`🔎 Referral candidate for ${uid}: header=${headerRef} query=${queryRef} startParam=${startParamRef}`);
+    } else {
+      console.log(`ℹ️ No referral candidate found for ${uid}`);
+    }
+
+    // Apply referral attribution once
+    if (ref && !user.referrerId) {
+      if (ref === user.id) {
+        console.log(`⚠️ Self-referral attempt ignored. user=${user.id}`);
       } else {
-        throw e;
+        const refUser = await User.findOne({ id: ref });
+        if (!refUser) {
+          console.log(`⚠️ Referral id ${ref} not found in DB for user ${user.id}`);
+        } else {
+          user.referrerId = refUser.id;
+          await user.save();
+
+          // Credit referrer once per child
+          if (!Array.isArray(refUser.referrals)) refUser.referrals = [];
+          if (!refUser.referrals.includes(user.id)) {
+            refUser.referrals.push(user.id);
+            refUser.referralEarnings = Math.round(((refUser.referralEarnings || 0) + REFERRAL_BONUS) * 100) / 100;
+            refUser.balance = Math.round(((refUser.balance || 0) + REFERRAL_BONUS) * 100) / 100;
+            await refUser.save();
+            console.log(`✅ Referral credited: inviter=${refUser.id} +$${REFERRAL_BONUS} for new user=${user.id}`);
+          } else {
+            console.log(`ℹ️ Referrer ${refUser.id} already has child ${user.id} recorded, skipping duplicate credit.`);
+          }
+        }
       }
+    } else if (ref && user.referrerId) {
+      console.log(`ℹ️ User ${user.id} already attributed to ${user.referrerId}, skipping.`);
     }
-  }
 
-  // 2) Resolve potential referrer from headers/query/start param
-  const ref = req.header('x-referrer') || req.query.ref || req.tgStartParam || null;
-
-  // 3) If this user hasn't been attributed yet, and ref is a valid other user, attribute once
-  if (ref && !user.referrerId && ref !== user.id) {
-    const refUser = await User.findOne({ id: ref });
-    if (refUser) {
-      user.referrerId = refUser.id;
-      await user.save();
-
-      // Ensure the parent has this child only once
-      if (!Array.isArray(refUser.referrals)) refUser.referrals = [];
-      if (!refUser.referrals.includes(user.id)) {
-        refUser.referrals.push(user.id);
-        refUser.referralEarnings = Math.round(((refUser.referralEarnings || 0) + REFERRAL_BONUS) * 100) / 100;
-        refUser.balance = Math.round(((refUser.balance || 0) + REFERRAL_BONUS) * 100) / 100;
-        await refUser.save();
+    res.json({
+      user: {
+        id: user.id,
+        first_name: user.first_name,
+        username: user.username,
+        balance: user.balance || 0,
+        referrerId: user.referrerId || null,
+        referralEarnings: user.referralEarnings || 0,
+        referrals: user.referrals || []
       }
-    }
+    });
+  } catch (err) {
+    console.error("❌ /me handler error:", err);
+    res.status(500).json({ error: 'Server error' });
   }
-
-  // Respond with compact user summary
-  res.json({
-    user: {
-      id: user.id,
-      first_name: user.first_name,
-      username: user.username,
-      balance: user.balance || 0,
-      referrerId: user.referrerId || null,
-      referralEarnings: user.referralEarnings || 0,
-      referrals: user.referrals || []
-    }
-  });
 };
 
 const tasksHandler = async (req, res) => {
@@ -361,12 +390,14 @@ const referralsHandler = async (req, res) => {
 
   const botUsername = process.env.TELEGRAM_BOT_USERNAME || process.env.VITE_BOT_USERNAME || 'Taskbucksbot';
   const botLink = `https://t.me/${botUsername}?start=${user.id}`;
+  const startAppLink = `https://t.me/${botUsername}?startapp=${user.id}`;
   const webLink = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}/?ref=${user.id}`;
 
   console.log(`📊 Referrals for ${user.id}: ${count} referrals, earnings: $${user.referralEarnings || 0}`);
 
   res.json({
     link: botLink,
+    startAppLink,
     webLink,
     referrals: refs,
     count,
