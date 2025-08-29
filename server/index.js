@@ -441,9 +441,11 @@ app.post('/api/admin/login', (req, res) => {
 
 res.cookie('admin_token', token, {
   httpOnly: true,
-  sameSite: 'none', // allow cross-site cookies
-  secure: true      // required on Render/Vercel (HTTPS)
+  sameSite: 'none',
+  secure: true,
+  path: '/',                   // ✅ ensure sent on all routes
 });
+
 
   res.json({ ok: true });
 });
